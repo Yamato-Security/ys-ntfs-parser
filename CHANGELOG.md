@@ -4,6 +4,15 @@
 
 First version: one workspace for Yamato Security's NTFS parsers. (@YamatoSecurity)
 
+### Fixed
+- The command refuses to overwrite its input, including hard-link and symlink aliases, even with
+  `--no-confirm-overwrite`. Resident stream extraction creates files exclusively and does not follow
+  pre-existing dangling symlinks. Invalid range options are rejected before touching an existing
+  export. (@YamatoSecurity)
+- Final buffered write/flush failures propagate in CSV, JSON, JSONL and bodyfile exports, preventing
+  a successful exit for incomplete output. (@YamatoSecurity)
+- Subcrate package include lists retain their RPL license text alongside upstream licenses. (@YamatoSecurity)
+
 ### Added
 - ys-mft-parser (`mft/`, with the FILE record slack of its `ys/file-record-slack` branch),
   ys-usn-journal-parser (`usn/`) and ys-logfile-parser (`logfile/`), with their histories and their

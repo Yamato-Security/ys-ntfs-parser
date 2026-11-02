@@ -27,6 +27,100 @@ use std::fs::File;
 use std::io::{Read, Write};
 use tempfile::tempdir;
 
+fn assert_input_protected(output_alias: impl FnOnce(&std::path::Path, &std::path::Path)) {
+    let dir = tempdir().unwrap();
+    let input = dir.path().join("input.MFT");
+    let output = dir.path().join("output.csv");
+    let original = fs::read(mft_sample()).unwrap();
+    fs::write(&input, &original).unwrap();
+    output_alias(&input, &output);
+    for force in [false, true] {
+        let mut cmd = cargo_bin_cmd!("ys-ntfs-parser");
+        cmd.arg(&input)
+            .args(["-o", "csv", "-r", "0", "-f"])
+            .arg(&output);
+        if force {
+            cmd.arg("--no-confirm-overwrite");
+        }
+        let result = cmd.output().unwrap();
+        assert!(!result.status.success());
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains("Refusing to overwrite the input MFT")
+        );
+        assert_eq!(fs::read(&input).unwrap(), original);
+        assert_eq!(fs::read(&output).unwrap(), original);
+    }
+}
+
+#[test]
+fn output_cannot_overwrite_the_input_or_a_hard_link() {
+    // Different paths, identical file identity. This also covers --no-confirm-overwrite.
+    assert_input_protected(|input, output| fs::hard_link(input, output).unwrap());
+    let dir = tempdir().unwrap();
+    let input = dir.path().join("input.MFT");
+    let original = fs::read(mft_sample()).unwrap();
+    fs::write(&input, &original).unwrap();
+    let mut cmd = cargo_bin_cmd!("ys-ntfs-parser");
+    cmd.arg(&input)
+        .arg("-f")
+        .arg(&input)
+        .arg("--no-confirm-overwrite");
+    cmd.assert().failure();
+    assert_eq!(fs::read(input).unwrap(), original);
+}
+
+#[test]
+fn invalid_ranges_do_not_truncate_an_existing_export() {
+    let dir = tempdir().unwrap();
+    let output = dir.path().join("previous.csv");
+    fs::write(&output, b"previous results\n").unwrap();
+    let mut cmd = cargo_bin_cmd!("ys-ntfs-parser");
+    cmd.arg(mft_sample())
+        .args(["-r", "invalid", "--no-confirm-overwrite", "-f"])
+        .arg(&output);
+    cmd.assert().failure();
+    assert_eq!(fs::read(output).unwrap(), b"previous results\n");
+}
+
+#[test]
+#[cfg(unix)]
+fn output_cannot_overwrite_input_through_a_symlink() {
+    assert_input_protected(|input, output| std::os::unix::fs::symlink(input, output).unwrap());
+}
+
+#[test]
+#[cfg(unix)]
+fn resident_streams_cannot_follow_a_dangling_symlink() {
+    let dir = tempdir().unwrap();
+    let first = dir.path().join("first");
+    let second = dir.path().join("second");
+    let outside = dir.path().join("outside");
+    let mut cmd = cargo_bin_cmd!("ys-ntfs-parser");
+    cmd.arg(mft_sample())
+        .args(["-r", "11600", "-e"])
+        .arg(&first);
+    cmd.assert().success();
+    let stream = fs::read_dir(&first)
+        .unwrap()
+        .next()
+        .expect("selected entry has resident data")
+        .unwrap()
+        .file_name();
+    fs::create_dir(&second).unwrap();
+    let link = second.join(&stream);
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    let mut cmd = cargo_bin_cmd!("ys-ntfs-parser");
+    cmd.arg(mft_sample())
+        .args(["-r", "11600", "-e"])
+        .arg(&second);
+    cmd.assert().failure();
+    assert!(
+        !outside.exists(),
+        "an extraction must never write through the dangling link"
+    );
+    assert!(fs::symlink_metadata(link).unwrap().file_type().is_symlink());
+}
+
 #[test]
 fn it_respects_directory_output() {
     let d = tempdir().unwrap();

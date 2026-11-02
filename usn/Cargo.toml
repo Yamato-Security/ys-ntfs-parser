@@ -12,7 +12,7 @@ repository = "https://github.com/Yamato-Security/ys-ntfs-parser"
 homepage = "https://github.com/Yamato-Security/ys-ntfs-parser"
 keywords = ["forensics", "dfir", "incident-response", "ntfs", "usn"]
 # Sources only: test fixtures stay in the repository.
-include = ["/src", "/README.md", "/LICENSE-APACHE", "/LICENSE-MIT"]
+include = ["/src", "/README.md", "/LICENSE", "/LICENSE-APACHE", "/LICENSE-MIT"]
 
 [lib]
 name = "usn"

@@ -13,7 +13,7 @@ authors = ["Omer Ben-Amram", "Zach Mathis (@yamatosecurity)"]
 edition = "2024"
 rust-version = "1.99"
 # samples/ is packaged: the unit tests and the benchmark read it.
-include = ["/src/", "/samples/", "/README.md", "/CHANGELOG.md", "/LICENSE-*"]
+include = ["/src/", "/samples/", "/README.md", "/CHANGELOG.md", "/LICENSE", "/LICENSE-*"]
 
 # The library keeps upstream's name, so code using it reads `use mft::…`.
 [lib]

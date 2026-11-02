@@ -33,7 +33,7 @@ use anyhow::{Context, Error, Result};
 use sonic_rs as sonic_json;
 use std::backtrace::Backtrace;
 use std::fmt;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
@@ -128,9 +128,18 @@ impl MftDump {
         let output_format =
             OutputFormat::from_str(output_format).expect("Validated with clap default values");
         let backtraces_enabled = matches.get_flag("backtraces");
+        // Validate all parsing options before creating or truncating any output.
+        let ranges = match matches.get_one::<String>("entry-range") {
+            Some(range) => Some(Ranges::from_str(range)?),
+            None => None,
+        };
 
         let output: Option<Box<dyn Write>> = if let Some(path) = output_target {
-            match Self::create_output_file(path, !matches.get_flag("no-confirm-overwrite")) {
+            match Self::create_output_file(
+                path,
+                !matches.get_flag("no-confirm-overwrite"),
+                Path::new(input),
+            ) {
                 Ok(f) => Some(Box::new(BufWriter::with_capacity(1 << 16, f))),
                 Err(e) => {
                     return Err(anyhow!(
@@ -159,11 +168,6 @@ impl MftDump {
                 eprintln!("using more than  -vvv does not affect verbosity level");
                 Some(Level::Trace)
             }
-        };
-
-        let ranges = match matches.get_one::<String>("entry-range") {
-            Some(range) => Some(Ranges::from_str(range)?),
-            None => None,
         };
 
         Ok(MftDump {
@@ -197,8 +201,19 @@ impl MftDump {
     }
 
     /// If `prompt` is passed, will display a confirmation prompt before overwriting files.
-    fn create_output_file(path: impl AsRef<Path>, prompt: bool) -> Result<File> {
+    fn create_output_file(path: impl AsRef<Path>, prompt: bool, input: &Path) -> Result<File> {
         let p = path.as_ref();
+        let input_identity = same_file::Handle::from_path(input)
+            .with_context(|| format!("Could not open input {}", input.display()))?;
+
+        // Refuse aliases before asking to overwrite. Check the opened destination again below,
+        // so changing a symlink between this check and open cannot truncate the evidence.
+        if same_file::Handle::from_path(p).is_ok_and(|output| output == input_identity) {
+            return Err(anyhow!(
+                "Refusing to overwrite the input MFT: {}",
+                input.display()
+            ));
+        }
 
         if p.is_dir() {
             return Err(anyhow!(
@@ -207,41 +222,41 @@ impl MftDump {
             ));
         }
 
-        if p.exists() {
-            if prompt {
-                match Confirm::new()
-                    .with_prompt(format!(
-                        "Are you sure you want to override output file at {}",
-                        p.display()
-                    ))
-                    .default(false)
-                    .interact()
-                {
-                    Ok(true) => Ok(File::create(p)?),
-                    Ok(false) => Err(anyhow!("Cancelled")),
-                    Err(e) => Err(anyhow!(
+        if p.exists() && prompt {
+            match Confirm::new()
+                .with_prompt(format!(
+                    "Are you sure you want to override output file at {}",
+                    p.display()
+                ))
+                .default(false)
+                .interact()
+            {
+                Ok(true) => (),
+                Ok(false) => return Err(anyhow!("Cancelled")),
+                Err(e) => {
+                    return Err(anyhow!(
                         "Failed to write confirmation prompt to term caused by\n{e}"
-                    )),
+                    ));
                 }
-            } else {
-                Ok(File::create(p)?)
-            }
-        } else {
-            // Ok to assume p is not an existing directory
-            match p.parent() {
-                Some(parent) =>
-                // Parent exist
-                {
-                    if parent.exists() {
-                        Ok(File::create(p)?)
-                    } else {
-                        fs::create_dir_all(parent)?;
-                        Ok(File::create(p)?)
-                    }
-                }
-                None => Err(anyhow!("Output file cannot be root.")),
             }
         }
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let output = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(p)?;
+        let output_identity = same_file::Handle::from_file(output.try_clone()?)?;
+        if output_identity == input_identity {
+            return Err(anyhow!(
+                "Refusing to overwrite the input MFT: {}",
+                input.display()
+            ));
+        }
+        output.set_len(0)?;
+        Ok(output)
     }
 
     /// Main entry point for `EvtxDump`
@@ -342,14 +357,15 @@ impl MftDump {
                     );
                     let data_stream_path = data_streams_dir.join(file_name);
 
-                    if data_stream_path.exists() {
-                        return Err(anyhow!(
-                            "The resident stream file {} already exists; extract into an empty directory.",
-                            data_stream_path.display()
-                        ));
-                    }
-
-                    let mut f = File::create(&data_stream_path)?;
+                    let mut f = OpenOptions::new().write(true).create_new(true).open(&data_stream_path)
+                        .map_err(|error| {
+                            let message = if error.kind() == io::ErrorKind::AlreadyExists {
+                                format!("The resident stream file {} already exists; extract into an empty directory.", data_stream_path.display())
+                            } else {
+                                format!("Could not create resident stream file {}", data_stream_path.display())
+                            };
+                            Error::new(error).context(message)
+                        })?;
                     f.write_all(stream.data())?;
                 }
             }
@@ -372,6 +388,13 @@ impl MftDump {
             }
         }
 
+        // Both csv::Writer and BufWriter ignore flush failures during Drop. A full disk or
+        // broken output pipe must make the command fail instead of reporting a complete export.
+        if let Some(writer) = csv_writer.as_mut() {
+            writer.flush()?;
+        } else if let Some(writer) = self.output.as_mut() {
+            writer.flush()?;
+        }
         Ok(())
     }
 
@@ -587,6 +610,40 @@ impl fmt::Debug for ForcedBacktrace {
 mod tests {
     use super::{MftParser, Path, Ranges, is_listed_by_its_base, sanitized};
     use std::str::FromStr;
+
+    #[test]
+    fn final_flush_errors_are_not_reported_as_success() {
+        struct FlushFails;
+        impl std::io::Write for FlushFails {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::other("simulated final flush failure"))
+            }
+        }
+        for output_format in [
+            super::OutputFormat::CSV,
+            super::OutputFormat::JSON,
+            super::OutputFormat::JSONL,
+            super::OutputFormat::Bodyfile,
+        ] {
+            let mut app = super::MftDump {
+                filepath: Path::new(env!("CARGO_MANIFEST_DIR")).join("mft/samples/MFT"),
+                output: Some(Box::new(FlushFails)),
+                data_streams_output: None,
+                verbosity_level: None,
+                output_format,
+                ranges: Some(Ranges::from_str("0").unwrap()),
+                json_buf: Vec::new(),
+                backtraces_enabled: false,
+            };
+            let error = app
+                .run()
+                .expect_err("a failed final flush must fail the export");
+            assert!(error.to_string().contains("simulated final flush failure"));
+        }
+    }
 
     #[test]
     fn sanitized_names_stay_in_the_output_directory() {

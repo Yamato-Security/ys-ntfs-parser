@@ -1833,6 +1833,7 @@ dependencies = [
  "insta",
  "log",
  "rexpect",
+ "same-file",
  "serde",
  "serde_json",
  "simplelog",

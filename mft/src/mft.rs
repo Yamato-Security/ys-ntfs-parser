@@ -1,0 +1,945 @@
+// Copyright (C) 2026 Shirofune Security Co., Ltd.
+// Copyright (c) 2019 Omer Ben-Amram
+//
+// This file is changed from omerbenamram/mft (https://github.com/omerbenamram/mft), whose code is
+// under the MIT License or the Apache License 2.0 (LICENSE-MIT, LICENSE-APACHE).
+//
+// Unless explicitly acquired and licensed from Licensor under another license, the contents of this
+// file are subject to the Reciprocal Public License ("RPL") Version 1.5, or subsequent versions as
+// allowed by the RPL, and You may not copy or use this file in either source code or executable
+// form, except in compliance with the terms and conditions of the RPL.
+//
+// All software distributed under the RPL is provided strictly on an "AS IS" basis, WITHOUT WARRANTY
+// OF ANY KIND, EITHER EXPRESS OR IMPLIED, AND LICENSOR HEREBY DISCLAIMS ALL SUCH WARRANTIES,
+// INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+// PURPOSE, QUIET ENJOYMENT, OR NON-INFRINGEMENT. See the RPL for specific language governing rights
+// and limitations under the RPL.
+
+use crate::FileNameAttr;
+use crate::attribute::{MftAttributeContent, MftAttributeType};
+use crate::entry::{MftEntry, best_name_of, find_best_name_attribute_in, is_long_name};
+use crate::err::{Error, Result};
+
+use crate::EntryHeader;
+use log::{debug, trace, warn};
+
+use lru::LruCache;
+use std::collections::{HashMap, HashSet};
+use std::fs::{self, File};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
+use std::num::NonZeroUsize;
+use std::path::{Path, PathBuf};
+
+/// How an entry contributes to the paths of its children.
+enum PathStep {
+    /// The entry's full path is known without looking further.
+    Final(PathBuf),
+    /// The entry has no name, and takes the path of its base entry.
+    Alias(Reference),
+    /// The entry's path is its parent's path joined with `name`.
+    Named { name: String, parent: PathParent },
+}
+
+enum PathParent {
+    Root,
+    Orphan,
+    Entry(Reference),
+}
+
+/// An entry number and the sequence number a reference expects it to have.
+type Reference = (u64, u16);
+
+pub struct MftParser<T: Read + Seek> {
+    data: T,
+    /// Entry size is present in the volume header, but this is not available to us.
+    /// Instead this will be guessed from the entry headers, see `guess_entry_size`.
+    entry_size: u32,
+    size: u64,
+    /// Directory paths by the reference that leads to them, so that a stale reference to a
+    /// reused entry doesn't take the path of the entry's current occupant.
+    entries_cache: LruCache<Reference, PathBuf>,
+    /// Extension record IDs by base record ID, built on first use by scanning the whole MFT.
+    /// Only needed for entries whose `$ATTRIBUTE_LIST` is non-resident, since the clusters
+    /// holding it aren't in the MFT.
+    extensions_index: Option<HashMap<u64, Vec<u64>>>,
+    // Next expected read offset in the underlying stream. Used to avoid a seek syscall when
+    // reading entries sequentially.
+    next_read_offset: u64,
+}
+
+impl MftParser<BufReader<File>> {
+    /// Instantiates an instance of the parser from a file path.
+    /// Does not mutate the file contents in any way.
+    pub fn from_path(filename: impl AsRef<Path>) -> Result<Self> {
+        let f = filename.as_ref();
+
+        let mft_fh = File::open(f).map_err(|e| Error::failed_to_open_file(f, e))?;
+        let size = fs::metadata(f)?.len();
+
+        Self::from_read_seek(BufReader::with_capacity(32 * 1024, mft_fh), Some(size))
+    }
+}
+
+impl MftParser<Cursor<Vec<u8>>> {
+    /// Instantiates an instance of the parser from a buffer containing a full MFT file.
+    /// Useful for testing.
+    pub fn from_buffer(buffer: Vec<u8>) -> Result<Self> {
+        let size = buffer.len() as u64;
+        let cursor = Cursor::new(buffer);
+
+        Self::from_read_seek(cursor, Some(size))
+    }
+}
+
+/// The largest MFT entry size accepted (NTFS uses 1024 or 4096 bytes). A bigger size in a damaged
+/// or crafted header would make every entry read allocate that much.
+const MAX_ENTRY_SIZE: u32 = 64 * 1024;
+/// How many entry positions are tried to find a usable header (the first 4 MiB at 1 KiB steps).
+const MAX_ENTRY_SIZE_PROBES: usize = 4096;
+
+fn check_entry_size<T: Read + Seek>(data: &mut T, off: u64) -> Result<u32> {
+    data.seek(SeekFrom::Start(off))?;
+    if let Ok(header) = EntryHeader::from_reader(data, 0) {
+        // Check that the entry size is nonzero and is consistent with
+        // the length of the update sequence array. There should be one
+        // element of the USA for each 512 bytes of entry, plus one extra
+        // element for the update sequence number. The probability that
+        // the entry size and USA size follow this rule when selected
+        // randomly is vanishingly small (1/2^32), so this check should be
+        // sufficient to ensure that we have a good entry size.
+        let size = header.total_entry_size;
+        let usa_sectors = header.usa_size.checked_sub(1).map(u32::from);
+        if size.is_power_of_two()
+            && (512..=MAX_ENTRY_SIZE).contains(&size)
+            && usa_sectors.is_some_and(|n| n * 512 == size)
+        {
+            return Ok(size);
+        }
+    }
+    Err(Error::FailedToReadEntrySize {})
+}
+
+/// Search for a valid MFT FILE record to determine the FILE record size.
+fn find_entry_size<T: Read + Seek>(data: &mut T, size: u64) -> Result<u32> {
+    // Each valid FILE entry header contains the total size of its entry.
+    // Every entry in the MFT is the same size, so we get the entry size
+    // for this MFT from the first good FILE entry we can find. The stride
+    // for the search is 1024; in the event that the entry size is 4096,
+    // a stride of 1024 still works, due to 4096 being a multiple of 1024.
+    //
+    // Corrupt MFTs may have the first entries wiped/overwritten, and using
+    // this method of determining the FILE record size may allow for recovery
+    // of entries in such cases. The search is bounded so that a large file
+    // that is not an MFT is not read to its end.
+    (0..size)
+        .step_by(1024)
+        .take(MAX_ENTRY_SIZE_PROBES)
+        .find_map(|off| check_entry_size(data, off).ok())
+        .ok_or(Error::FailedToReadEntrySize {})
+}
+
+impl<T: Read + Seek> MftParser<T> {
+    pub fn from_read_seek(mut data: T, size: Option<u64>) -> Result<Self> {
+        let size = match size {
+            Some(sz) => sz,
+            None => data.seek(SeekFrom::End(0))?,
+        };
+
+        let entry_size = find_entry_size(&mut data, size)?;
+
+        data.rewind()?;
+
+        Ok(Self {
+            data,
+            entry_size,
+            size,
+            entries_cache: LruCache::new(NonZeroUsize::new(1000).expect("1000 > 0")),
+            extensions_index: None,
+            next_read_offset: 0,
+        })
+    }
+
+    pub fn get_entry_count(&self) -> u64 {
+        self.size / u64::from(self.entry_size)
+    }
+
+    /// Reads an entry from the MFT by entry number.
+    pub fn get_entry(&mut self, entry_number: u64) -> Result<MftEntry> {
+        debug!("Reading entry {entry_number}");
+
+        let mut entry_buffer = vec![0; self.entry_size as usize];
+        self.read_entry_bytes(entry_number, &mut entry_buffer)?;
+
+        MftEntry::from_buffer(entry_buffer, entry_number)
+    }
+
+    /// Reads the raw bytes of an entry into `buffer`, which is one entry long.
+    fn read_entry_bytes(&mut self, entry_number: u64, buffer: &mut [u8]) -> Result<()> {
+        let entry_size = u64::from(self.entry_size);
+        let desired_offset = entry_number
+            .checked_mul(entry_size)
+            .ok_or_else(|| Error::Any {
+                detail: format!("entry number {entry_number} is beyond the MFT"),
+            })?;
+
+        // Avoid seeking when reading sequential entries; this keeps the BufReader hot and
+        // removes a large number of __lseek syscalls in tight loops.
+        if self.next_read_offset != desired_offset {
+            self.data.seek(SeekFrom::Start(desired_offset))?;
+            self.next_read_offset = desired_offset;
+        }
+
+        self.data.read_exact(buffer)?;
+        self.next_read_offset = self.next_read_offset.saturating_add(entry_size);
+        Ok(())
+    }
+
+    /// Iterates over all the entries in the MFT.
+    pub fn iter_entries(&mut self) -> impl Iterator<Item = Result<MftEntry>> + '_ {
+        let total_entries = self.get_entry_count();
+
+        (0..total_entries).map(move |i| self.get_entry(i))
+    }
+
+    /// Reads the extension records of a base entry: the records that hold the attributes its
+    /// `$ATTRIBUTE_LIST` moved out of it. Returns no records for an entry without one.
+    ///
+    /// A resident `$ATTRIBUTE_LIST` names the records directly. A non-resident one lives outside
+    /// the MFT (and one that fails to parse can't be trusted), so the first such entry triggers a
+    /// scan of the whole MFT for records whose base reference points back at it. Either way, only records whose base reference matches the
+    /// entry (number and sequence) are returned, so reused records of a deleted file are left
+    /// out. Records that can't be read are skipped.
+    pub fn get_extension_entries(&mut self, entry: &MftEntry) -> Vec<MftEntry> {
+        let record_number = entry.header.record_number;
+        // Only the header is needed to know that there is a list: content that fails to parse
+        // still leaves the scan to find the extensions.
+        let mut attribute_lists = entry
+            .iter_attribute_records_matching(Some(vec![MftAttributeType::AttributeList]))
+            .filter_map(Result::ok)
+            .peekable();
+        if attribute_lists.peek().is_none() {
+            return Vec::new();
+        }
+
+        let mut ids: Vec<u64> = Vec::new();
+        let mut needs_scan = false;
+        for (header, record) in attribute_lists {
+            let content = MftAttributeContent::from_record(record, &header).ok();
+            match content
+                .as_ref()
+                .and_then(MftAttributeContent::as_attribute_list)
+            {
+                Some(list) => ids.extend(
+                    list.entries
+                        .iter()
+                        .map(|e| e.segment_reference.entry)
+                        .filter(|&id| id != record_number),
+                ),
+                None => needs_scan = true,
+            }
+        }
+        if needs_scan {
+            let index = self.extensions_index();
+            ids.extend(index.get(&record_number).into_iter().flatten());
+        }
+        ids.sort_unstable();
+        ids.dedup();
+
+        ids.into_iter()
+            .filter_map(|id| match self.get_entry(id) {
+                Ok(record) if Self::is_extension_of(&record, entry) => Some(record),
+                Ok(_) => {
+                    trace!("Entry {id} is not an extension of entry {record_number}");
+                    None
+                }
+                Err(e) => {
+                    warn!("Failed to read extension record {id} of entry {record_number}: {e}");
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Whether `record` is a current extension record of `base`. A record freed with a deleted
+    /// file keeps pointing at the sequence number the file had before Windows bumped it on
+    /// deletion. A freed record pointing at a live file was dropped from its attribute list.
+    fn is_extension_of(record: &MftEntry, base: &MftEntry) -> bool {
+        let reference = &record.header.base_reference;
+        let sequence = base.header.sequence;
+        let sequence_matches = reference.sequence == sequence
+            || (!base.is_allocated() && reference.sequence == sequence.wrapping_sub(1));
+        reference.entry == base.header.record_number
+            && record.is_allocated() == base.is_allocated()
+            && sequence_matches
+    }
+
+    fn extensions_index(&mut self) -> &HashMap<u64, Vec<u64>> {
+        if self.extensions_index.is_none() {
+            let mut index: HashMap<u64, Vec<u64>> = HashMap::new();
+            let mut buffer = vec![0; self.entry_size as usize];
+            for id in 0..self.get_entry_count() {
+                // Only the header is needed, which the update sequence array doesn't touch.
+                if self.read_entry_bytes(id, &mut buffer).is_ok()
+                    && let Ok(header) = EntryHeader::from_reader(&mut buffer.as_slice(), id)
+                    && !header.is_base_record()
+                {
+                    index
+                        .entry(header.base_reference.entry)
+                        .or_default()
+                        .push(id);
+                }
+            }
+            return self.extensions_index.insert(index);
+        }
+        self.extensions_index.get_or_insert_default()
+    }
+
+    /// The name and parent reference of an entry for path resolution, from
+    /// [`find_best_name_attribute_in`]. Extension records are only read when the base record has
+    /// no long name.
+    fn best_name(&mut self, entry: &MftEntry) -> Option<(String, Reference)> {
+        let to_owned = |fname: FileNameAttr<'_>| {
+            (
+                fname.name.to_utf8_string(),
+                (fname.parent.entry, fname.parent.sequence),
+            )
+        };
+
+        let base_name = entry.find_best_name_attribute();
+        if base_name.as_ref().is_some_and(is_long_name) {
+            return base_name.map(to_owned);
+        }
+
+        // Without an `$ATTRIBUTE_LIST`, there are no extension records and nothing is read.
+        let extensions = self.get_extension_entries(entry);
+        find_best_name_attribute_in(entry, &extensions).map(to_owned)
+    }
+
+    /// Classifies an entry for path resolution, as the parent of another entry.
+    fn path_step(&mut self, entry: &MftEntry) -> PathStep {
+        let name = self.best_name(entry);
+        Self::path_step_named(entry, name)
+    }
+
+    /// [`MftParser::path_step`], given the entry's [`MftParser::best_name`].
+    fn path_step_named(entry: &MftEntry, name: Option<(String, Reference)>) -> PathStep {
+        match name {
+            // A parent that isn't a directory can't be trusted.
+            Some(_) if !entry.is_dir() => PathStep::Final(PathBuf::from("[Unknown]")),
+            Some((name, parent)) => PathStep::Named {
+                name,
+                parent: Self::path_parent(entry.header.record_number, parent),
+            },
+            // I have a parent, which doesn't have a filename attribute.
+            None => match entry.header.base_reference.entry {
+                0 => PathStep::Final(PathBuf::new()),
+                _ if !entry.is_dir() => PathStep::Final(PathBuf::from("[Unknown]")),
+                base => PathStep::Alias((base, entry.header.base_reference.sequence)),
+            },
+        }
+    }
+
+    /// Where the parent reference of entry `entry_id`'s name leads.
+    fn path_parent(entry_id: u64, parent: Reference) -> PathParent {
+        match parent {
+            // MFT entry 5 is the root path.
+            (5, _) => PathParent::Root,
+            (0, _) => PathParent::Orphan,
+            (id, _) if id == entry_id => {
+                trace!("Found self-referential file path, for entry ID {id}");
+                PathParent::Orphan
+            }
+            reference => PathParent::Entry(reference),
+        }
+    }
+
+    /// Classifies the entry that `reference` points to, as the parent of another entry. A
+    /// reference to an older version of a reused entry (another sequence number) doesn't lead to
+    /// the entry's current path (omerbenamram/mft#150). Its children are orphans, unless the old
+    /// version left a name behind in an extension record (see [`MftParser::leftover_name`]).
+    fn referenced_step(&mut self, (entry_id, sequence): Reference) -> PathStep {
+        match self.get_entry(entry_id) {
+            Ok(parent) if !is_referenced_version(&parent, sequence) => {
+                trace!(
+                    "Found stale MFT reference: entry ID {entry_id}, expected sequence \
+                     {sequence}, actual sequence {}",
+                    parent.header.sequence
+                );
+                match self.leftover_name((entry_id, sequence)) {
+                    Some((name, grandparent)) => PathStep::Named {
+                        name,
+                        parent: Self::path_parent(entry_id, grandparent),
+                    },
+                    None => PathStep::Final(PathBuf::from("[Orphaned]")),
+                }
+            }
+            Ok(parent) => self.path_step(&parent),
+            // Parent is maybe corrupted or incomplete, use a sentinel instead.
+            Err(_) => PathStep::Final(PathBuf::from("[Unknown]")),
+        }
+    }
+
+    /// The name and parent reference of an older version of a reused entry, from the extension
+    /// records it left behind: free records whose base reference still names that version.
+    /// When a directory whose long name had moved to an extension record is deleted and its base
+    /// record reused, its children can still be placed (Harel Segev's "orphaned attributes",
+    /// <https://harelsegev.github.io/posts/resolving-file-paths-using-the-mft/>). Looks the
+    /// records up in the extension index, which is built on first use by scanning the MFT.
+    fn leftover_name(&mut self, (entry_id, sequence): Reference) -> Option<(String, Reference)> {
+        let ids = self.extensions_index().get(&entry_id)?.clone();
+        let leftovers: Vec<MftEntry> = ids
+            .into_iter()
+            .filter_map(|id| self.get_entry(id).ok())
+            .filter(|record| {
+                let base = &record.header.base_reference;
+                !record.is_allocated() && base.entry == entry_id && base.sequence == sequence
+            })
+            .collect();
+        // None of them is the base record, so none of their names takes precedence: Win32 over
+        // POSIX over DOS across all of them.
+        let name = best_name_of(&leftovers)?;
+        trace!(
+            "Found the name of entry ID {entry_id} (sequence {sequence}) in a leftover extension record"
+        );
+        Some((
+            name.name.to_utf8_string(),
+            (name.parent.entry, name.parent.sequence),
+        ))
+    }
+
+    /// Resolves the path of a directory, given its own step, by walking up its ancestors.
+    /// Caches the path of every directory on the way.
+    ///
+    /// The walk is iterative, so deep or cyclic parent chains can't overflow the stack.
+    /// A cycle is cut at its lowest entry ID, which becomes `[Orphaned]/<name>`. This keeps
+    /// paths independent of the order in which entries are resolved.
+    fn resolve_directory_path(&mut self, reference: Reference, first_step: PathStep) -> PathBuf {
+        // Directories from `reference` upwards, each with its name.
+        let mut chain: Vec<(Reference, String)> = Vec::new();
+        let mut visited: HashSet<u64> = HashSet::new();
+        let mut current = reference;
+        let mut step = first_step;
+
+        let mut prefix = loop {
+            visited.insert(current.0);
+            let next = match step {
+                PathStep::Final(path) => {
+                    self.entries_cache.put(current, path.clone());
+                    break path;
+                }
+                PathStep::Alias(base) => base,
+                PathStep::Named { name, parent } => {
+                    chain.push((current, name));
+                    match parent {
+                        PathParent::Root => break PathBuf::new(),
+                        PathParent::Orphan => break PathBuf::from("[Orphaned]"),
+                        PathParent::Entry(reference) => reference,
+                    }
+                }
+            };
+
+            if let Some(cached) = self.entries_cache.get(&next) {
+                break cached.clone();
+            }
+
+            if visited.contains(&next.0) {
+                match chain.iter().position(|((id, _), _)| *id == next.0) {
+                    Some(cycle_start) => {
+                        trace!("Found a cycle in parent references at entry ID {}", next.0);
+                        let path = self.cut_cycle(&chain[cycle_start..]);
+                        chain.truncate(cycle_start);
+                        break path;
+                    }
+                    // A cycle made only of entries without names.
+                    None => break PathBuf::from("[Orphaned]"),
+                }
+            }
+
+            current = next;
+            step = self.referenced_step(current);
+        };
+
+        for (reference, name) in chain.iter().rev() {
+            prefix = prefix.join(name);
+            self.entries_cache.put(*reference, prefix.clone());
+        }
+        prefix
+    }
+
+    /// Assigns paths to the members of a parent cycle (child first, each one's parent is the
+    /// next, and the last one's parent is the first), cutting it at the lowest entry ID.
+    /// Caches them, and returns the path of the first member.
+    fn cut_cycle(&mut self, cycle: &[(Reference, String)]) -> PathBuf {
+        let cut = cycle
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, ((id, _), _))| *id)
+            .map_or(0, |(i, _)| i);
+
+        // Walk from the cut member down to its children, wrapping around the cycle.
+        let mut path = PathBuf::from("[Orphaned]");
+        let mut first_member_path = PathBuf::new();
+        for offset in 0..cycle.len() {
+            let i = (cut + cycle.len() - offset) % cycle.len();
+            let (reference, name) = &cycle[i];
+            path = path.join(name);
+            self.entries_cache.put(*reference, path.clone());
+            if i == 0 {
+                first_member_path = path.clone();
+            }
+        }
+        first_member_path
+    }
+
+    /// Gets the full path of the directory that `reference` points to.
+    fn get_directory_path(&mut self, reference: Reference) -> PathBuf {
+        if let Some(cached) = self.entries_cache.get(&reference) {
+            return cached.clone();
+        }
+
+        let step = self.referenced_step(reference);
+        self.resolve_directory_path(reference, step)
+    }
+
+    /// Gets the full path for an entry.
+    /// Caches computations.
+    pub fn get_full_path_for_entry(&mut self, entry: &MftEntry) -> Result<Option<PathBuf>> {
+        let entry_id = entry.header.record_number;
+        let filename_header = self.best_name(entry);
+
+        // Directories go through the same walk as parents, so a directory's path always
+        // matches the prefix of its children's paths.
+        if entry.is_dir() && filename_header.is_some() {
+            let reference = (entry_id, entry.header.sequence);
+            if let Some(cached) = self.entries_cache.get(&reference) {
+                return Ok(Some(cached.clone()));
+            }
+            let step = Self::path_step_named(entry, filename_header);
+            return Ok(Some(self.resolve_directory_path(reference, step)));
+        }
+
+        match filename_header {
+            Some((name, parent)) => {
+                match parent {
+                    // MFT entry 5 is the root path.
+                    (5, _) => Ok(Some(PathBuf::from(name))),
+                    (0, _) => {
+                        trace!("Found orphaned entry ID {entry_id}");
+                        Ok(Some(PathBuf::from("[Orphaned]").join(name)))
+                    }
+                    (id, _) if id == entry_id => {
+                        trace!("Found self-referential file path, for entry ID {entry_id}");
+                        Ok(Some(PathBuf::from("[Orphaned]").join(name)))
+                    }
+                    reference => Ok(Some(self.get_directory_path(reference).join(name))),
+                }
+            }
+            None => match entry.header.base_reference {
+                // I don't have a parent reference, and no X30 attribute. Though luck.
+                ref base if base.entry == 0 => Ok(None),
+                ref base => Ok(Some(self.get_directory_path((base.entry, base.sequence)))),
+            },
+        }
+    }
+}
+
+/// Whether `entry` is the version of itself that a reference with `sequence` points to. NTFS
+/// increments an entry's sequence number when the entry is freed, so the deleted parent directory
+/// of a deleted file is one ahead of the file's reference; a sequence of 0 names no version.
+fn is_referenced_version(entry: &MftEntry, sequence: u16) -> bool {
+    let actual = entry.header.sequence;
+    sequence == 0
+        || actual == sequence
+        || (!entry.is_allocated() && actual == sequence.wrapping_add(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::tests::fixtures::{mft_sample, mft_sample_name};
+    use crate::{MftEntry, MftParser};
+    use std::fs::File;
+    use std::io::{BufReader, Seek, SeekFrom};
+    use std::path::{Path, PathBuf};
+
+    use super::find_entry_size;
+
+    const ENTRY_SIZE: usize = 1024;
+
+    /// Builds a minimal 1024-byte `FILE` record, optionally with a Win32 `$FILE_NAME`.
+    fn synthetic_entry(is_dir: bool, name: Option<(&str, u64)>) -> Vec<u8> {
+        let mut e = vec![0u8; ENTRY_SIZE];
+        e[0..4].copy_from_slice(b"FILE");
+        e[4..6].copy_from_slice(&0x30u16.to_le_bytes()); // usa offset
+        e[6..8].copy_from_slice(&3u16.to_le_bytes()); // usa size
+        e[16..18].copy_from_slice(&1u16.to_le_bytes()); // sequence
+        e[18..20].copy_from_slice(&1u16.to_le_bytes()); // hard link count
+        e[20..22].copy_from_slice(&0x38u16.to_le_bytes()); // first attribute
+        let flags: u16 = if is_dir { 0x3 } else { 0x1 };
+        e[22..24].copy_from_slice(&flags.to_le_bytes());
+        e[28..32].copy_from_slice(&(ENTRY_SIZE as u32).to_le_bytes());
+        // Update sequence number 1, stamped at the end of both sectors.
+        e[0x30..0x32].copy_from_slice(&1u16.to_le_bytes());
+        e[510..512].copy_from_slice(&1u16.to_le_bytes());
+        e[1022..1024].copy_from_slice(&1u16.to_le_bytes());
+
+        let mut offset = 0x38;
+        if let Some((name, parent)) = name {
+            let mut value = Vec::new();
+            let mut parent_ref = parent.to_le_bytes();
+            parent_ref[6..8].copy_from_slice(&1u16.to_le_bytes());
+            value.extend_from_slice(&parent_ref);
+            const FT: [u8; 8] = [0xD5, 0x2D, 0x48, 0x58, 0x43, 0x5F, 0xCE, 0x01];
+            for _ in 0..4 {
+                value.extend_from_slice(&FT);
+            }
+            value.extend_from_slice(&[0; 16]); // sizes
+            value.extend_from_slice(&[0; 8]); // flags + reparse value
+            value.push(name.len() as u8);
+            value.push(1); // Win32 namespace
+            for b in name.as_bytes() {
+                value.extend_from_slice(&[*b, 0]);
+            }
+
+            let record_length = (24 + value.len() + 7) & !7;
+            let attr = &mut e[offset..offset + record_length];
+            attr[0..4].copy_from_slice(&0x30u32.to_le_bytes());
+            attr[4..8].copy_from_slice(&(record_length as u32).to_le_bytes());
+            attr[16..20].copy_from_slice(&(value.len() as u32).to_le_bytes());
+            attr[20..22].copy_from_slice(&24u16.to_le_bytes());
+            attr[24..24 + value.len()].copy_from_slice(&value);
+            offset += record_length;
+        }
+        e[offset..offset + 4].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        e[24..28].copy_from_slice(&((offset + 8) as u32).to_le_bytes()); // used size
+        e
+    }
+
+    fn cyclic_mft() -> Vec<u8> {
+        // Entries 0-4 are placeholders, 5 is the root, 6 and 7 are directories that claim
+        // each other as parents, and 8 is a file inside 6.
+        let mut mft = Vec::new();
+        for _ in 0..5 {
+            mft.extend(synthetic_entry(false, None));
+        }
+        mft.extend(synthetic_entry(true, Some((".", 5))));
+        mft.extend(synthetic_entry(true, Some(("A", 7))));
+        mft.extend(synthetic_entry(true, Some(("B", 6))));
+        mft.extend(synthetic_entry(false, Some(("f.txt", 6))));
+        mft
+    }
+
+    fn resolve_in_order(order: &[u64]) -> Vec<(u64, PathBuf)> {
+        let mut parser = MftParser::from_buffer(cyclic_mft()).unwrap();
+        let mut paths: Vec<(u64, PathBuf)> = order
+            .iter()
+            .map(|&id| {
+                let entry = parser.get_entry(id).unwrap();
+                (id, parser.get_full_path_for_entry(&entry).unwrap().unwrap())
+            })
+            .collect();
+        paths.sort();
+        paths
+    }
+
+    #[test]
+    fn test_get_full_path_breaks_parent_cycles() {
+        // The cycle is cut at its lowest entry ID (6).
+        let expected = vec![
+            (6, PathBuf::from("[Orphaned]").join("A")),
+            (7, PathBuf::from("[Orphaned]").join("A").join("B")),
+            (8, PathBuf::from("[Orphaned]").join("A").join("f.txt")),
+        ];
+
+        // Paths don't depend on the order entries are resolved in.
+        assert_eq!(resolve_in_order(&[6, 7, 8]), expected);
+        assert_eq!(resolve_in_order(&[7, 6, 8]), expected);
+        assert_eq!(resolve_in_order(&[8, 7, 6]), expected);
+    }
+
+    #[test]
+    fn test_zeroed_first_entry_uses_next_entry_size() {
+        let mut mft = vec![0u8; ENTRY_SIZE];
+        mft.extend(synthetic_entry(false, Some(("f.txt", 5))));
+
+        let parser = MftParser::from_buffer(mft).unwrap();
+        assert_eq!(parser.get_entry_count(), 2);
+    }
+
+    #[test]
+    fn test_all_zero_mft_is_error_not_panic() {
+        assert!(MftParser::from_buffer(vec![0u8; ENTRY_SIZE * 4]).is_err());
+    }
+
+    // entrypoint for clion profiler.
+    #[test]
+    fn test_process_90_mft_entries() {
+        let sample = mft_sample();
+
+        let mut parser = MftParser::from_path(sample).unwrap();
+
+        let mut count = 0;
+        for record in parser.iter_entries().take(10000).filter_map(|a| a.ok()) {
+            for _attribute in record.iter_attributes() {
+                count += 1;
+            }
+        }
+
+        assert!(count > 0)
+    }
+
+    #[test]
+    fn test_get_full_path() {
+        let sample = mft_sample();
+        let mut parser = MftParser::from_path(sample).unwrap();
+
+        let mut paths = Vec::with_capacity(1000);
+        let entries: Vec<MftEntry> = parser
+            .iter_entries()
+            .take(1000)
+            .filter_map(Result::ok)
+            .collect();
+
+        for entry in entries {
+            if let Some(path) = parser.get_full_path_for_entry(&entry).unwrap() {
+                paths.push(path)
+            }
+        }
+
+        assert_eq!(paths.len(), 988);
+    }
+
+    #[test]
+    fn test_get_full_path_independent_of_resolution_order() {
+        // Directory paths are cached as they are resolved, so make sure the cache never changes
+        // the result: resolving in MFT order and in reverse order must agree.
+        let sample = mft_sample();
+        let mut forward_parser = MftParser::from_path(&sample).unwrap();
+        let mut reverse_parser = MftParser::from_path(&sample).unwrap();
+
+        let entries: Vec<MftEntry> = forward_parser
+            .iter_entries()
+            .filter_map(Result::ok)
+            .collect();
+
+        let forward: Vec<_> = entries
+            .iter()
+            .map(|e| forward_parser.get_full_path_for_entry(e).unwrap())
+            .collect();
+        let mut reverse: Vec<_> = entries
+            .iter()
+            .rev()
+            .map(|e| reverse_parser.get_full_path_for_entry(e).unwrap())
+            .collect();
+        reverse.reverse();
+
+        assert_eq!(forward.len(), entries.len());
+        assert_eq!(forward, reverse);
+    }
+
+    #[test]
+    fn test_get_full_name() {
+        let sample = mft_sample();
+        let mut parser = MftParser::from_path(sample).unwrap();
+
+        let e = parser.get_entry(5).unwrap();
+        parser.get_full_path_for_entry(&e).unwrap();
+    }
+
+    /// Records 76746 and 77871 of the CFReDS 2015 Data Leakage Case `$MFT` (NIST, public
+    /// domain): a deleted file (sequence 4) and its freed extension record, which still points
+    /// at sequence 3.
+    #[test]
+    fn test_deleted_file_keeps_its_extension_record() {
+        let base = MftEntry::from_buffer(
+            include_bytes!("../samples/entry_76746_deleted_base").to_vec(),
+            76746,
+        )
+        .unwrap();
+        let extension = MftEntry::from_buffer(
+            include_bytes!("../samples/entry_77871_deleted_extension").to_vec(),
+            77871,
+        )
+        .unwrap();
+        assert!(!base.is_allocated() && !extension.is_allocated());
+        assert_eq!(base.header.sequence, 4);
+        assert_eq!(extension.header.base_reference.sequence, 3);
+        assert!(MftParser::<std::io::Cursor<Vec<u8>>>::is_extension_of(
+            &extension, &base
+        ));
+
+        // Once the file is live again (the record was reused), an old extension is stale.
+        let mut reused = base.clone();
+        reused.header.flags |= crate::entry::EntryFlags::ALLOCATED;
+        assert!(!MftParser::<std::io::Cursor<Vec<u8>>>::is_extension_of(
+            &extension, &reused
+        ));
+    }
+
+    #[test]
+    fn test_paths_have_the_same_components_on_every_os() {
+        let mut parser = MftParser::from_path(mft_sample()).unwrap();
+        let e = parser.get_entry(500).unwrap();
+        let path = parser.get_full_path_for_entry(&e).unwrap().unwrap();
+        assert_eq!(path, Path::new("WINDOWS/system32/devmgmt.msc"));
+        assert_eq!(
+            crate::utils::windows_path(&path),
+            "WINDOWS\\system32\\devmgmt.msc"
+        );
+    }
+
+    #[test]
+    fn test_parent_sequence_mismatch_is_orphaned() {
+        let mut parser = MftParser::from_path(mft_sample()).unwrap();
+
+        // Entry 5 is the root; reference it with a stale sequence number.
+        let root = parser.get_entry(5).unwrap();
+        let stale_sequence = root.header.sequence.wrapping_add(1);
+
+        let path = parser
+            .get_directory_path((5, stale_sequence))
+            .join("test.txt");
+        assert_eq!(path, Path::new("[Orphaned]/test.txt"));
+        // the current version isn't orphaned
+        let current = parser.get_directory_path((5, root.header.sequence));
+        assert!(!current.starts_with("[Orphaned]"), "{}", current.display());
+    }
+
+    /// Point every $FILE_NAME of `entry` at `parent` (with the parent's current sequence number).
+    fn set_parent(data: &mut [u8], entry: usize, parent: u64) {
+        let size = 1024;
+        let base = entry * size;
+        let parent_sequence = {
+            let p = parent as usize * size;
+            u16::from_le_bytes([data[p + 0x10], data[p + 0x11]])
+        };
+        let mut off = usize::from(u16::from_le_bytes([data[base + 0x14], data[base + 0x15]]));
+        while off + 8 < size {
+            let t = u32::from_le_bytes(data[base + off..base + off + 4].try_into().unwrap());
+            let len = u32::from_le_bytes(data[base + off + 4..base + off + 8].try_into().unwrap());
+            if t == 0xFFFF_FFFF || len == 0 {
+                break;
+            }
+            if t == 0x30 && data[base + off + 8] == 0 {
+                let content = usize::from(u16::from_le_bytes([
+                    data[base + off + 0x14],
+                    data[base + off + 0x15],
+                ]));
+                let at = base + off + content;
+                assert!(at % 512 + 8 <= 510, "must not touch a fixup position");
+                data[at..at + 6].copy_from_slice(&parent.to_le_bytes()[..6]);
+                data[at + 6..at + 8].copy_from_slice(&parent_sequence.to_le_bytes());
+            }
+            off += len as usize;
+        }
+    }
+
+    /// Entries from 16 on that are directories with a $FILE_NAME.
+    fn directories(data: &[u8]) -> Vec<usize> {
+        (16..data.len() / 1024)
+            .filter(|&i| {
+                let base = i * 1024;
+                &data[base..base + 4] == b"FILE" && data[base + 0x16] & 2 != 0
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_deleted_parent_directory_keeps_its_path() {
+        // Entry 12590 (deleted) references parent 12589 with sequence 1; the parent directory was
+        // deleted too, which raised its sequence number to 2. It is still the same directory.
+        let mut parser = MftParser::from_path(mft_sample()).unwrap();
+        let parent = parser.get_entry(12589).unwrap();
+        assert!(!parent.is_allocated());
+        assert_eq!(parent.header.sequence, 2);
+        let entry = parser.get_entry(12590).unwrap();
+        assert_eq!(
+            parser.get_full_path_for_entry(&entry).unwrap().unwrap(),
+            Path::new(
+                "Documents and Settings/Donald Blake/Local Settings/History/History.IE5/MSHist012009011420090115/index.dat"
+            )
+        );
+        // a reference with sequence 0 names no version of the parent
+        assert_eq!(
+            parser.get_directory_path((5, 0)),
+            parser.get_directory_path((5, 5))
+        );
+    }
+
+    #[test]
+    fn test_parent_reference_loop_on_real_entries() {
+        let mut data = std::fs::read(mft_sample()).unwrap();
+        data.truncate(1024 * 1024);
+        let dirs = directories(&data);
+        let (a, b) = (dirs[0], dirs[1]);
+        set_parent(&mut data, a, b as u64);
+        set_parent(&mut data, b, a as u64);
+        let mut parser = MftParser::from_buffer(data).unwrap();
+        let entry = parser.get_entry(a as u64).unwrap();
+        let path = parser.get_full_path_for_entry(&entry).unwrap().unwrap();
+        assert!(path.starts_with("[Orphaned]"), "{}", path.display());
+        let entries = (0..parser.get_entry_count())
+            .filter_map(|i| parser.get_entry(i).ok())
+            .collect::<Vec<_>>();
+        for e in &entries {
+            parser.get_full_path_for_entry(e).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_very_deep_parent_chains_do_not_overflow_the_stack() {
+        let mut data = std::fs::read(mft_sample()).unwrap();
+        let dirs = directories(&data);
+        let chain = &dirs[..600];
+        for pair in chain.windows(2) {
+            set_parent(&mut data, pair[1], pair[0] as u64);
+        }
+        let mut parser = MftParser::from_buffer(data).unwrap();
+        let deepest = parser.get_entry(*chain.last().unwrap() as u64).unwrap();
+        let path = parser.get_full_path_for_entry(&deepest).unwrap().unwrap();
+        assert!(path.components().count() >= chain.len());
+    }
+
+    #[test]
+    fn test_huge_entry_numbers_are_errors() {
+        let mut parser = MftParser::from_path(mft_sample()).unwrap();
+        assert!(parser.get_entry(u64::MAX).is_err());
+        assert!(parser.get_entry(parser.get_entry_count()).is_err());
+        assert!(parser.get_entry(0).is_ok());
+    }
+
+    #[test]
+    fn test_find_entry_size() {
+        // The first header is zeroed. The second header has a corrupt
+        // sequence array. The third header is valid.
+        let f = File::open(mft_sample_name("third_header_good")).unwrap();
+        let mut data = BufReader::new(f);
+        let size = data.seek(SeekFrom::End(0)).unwrap();
+        data.seek(SeekFrom::Start(0)).unwrap();
+        assert_eq!(find_entry_size(&mut data, size).unwrap(), 1024);
+    }
+
+    #[test]
+    fn test_find_entry_size_rejects_unusable_headers() {
+        let mut data = std::fs::read(mft_sample()).unwrap();
+        data.truncate(4 * 1024);
+        // entry 0: no update sequence array (usa_size 0 must not underflow)
+        data[6..8].copy_from_slice(&0u16.to_le_bytes());
+        // entry 1: a consistent but huge size (1 MiB, 2049 USA elements)
+        data[1024 + 6..1024 + 8].copy_from_slice(&2049u16.to_le_bytes());
+        data[1024 + 0x1C..1024 + 0x20].copy_from_slice(&(1024u32 * 1024).to_le_bytes());
+        // entry 2: zeroed
+        data[2048..3072].fill(0);
+        // entry 3 is intact
+        let size = data.len() as u64;
+        let mut cursor = std::io::Cursor::new(data.clone());
+        assert_eq!(find_entry_size(&mut cursor, size).unwrap(), 1024);
+        data[3072..].fill(0);
+        let mut cursor = std::io::Cursor::new(data.clone());
+        assert!(find_entry_size(&mut cursor, size).is_err());
+        assert!(MftParser::from_buffer(data).is_err());
+        assert!(
+            MftParser::from_buffer(vec![0; 4096]).is_err(),
+            "no division by zero"
+        );
+    }
+}

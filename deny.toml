@@ -1,0 +1,33 @@
+# Supply-chain policy. Runs in CI on every change.
+
+[graph]
+all-features = true
+
+[advisories]
+yanked = "deny"
+
+[licenses]
+# Dependencies: permissive only, so any Yamato Security tool can use these crates. RPL-1.5 is
+# the crates' own license (LICENSE).
+allow = ["RPL-1.5", "MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib"]
+unused-allowed-license = "allow"
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# The crates of this workspace depend on each other by path (none is published).
+allow-wildcard-paths = true
+# Parsers of evidence have no business talking to the network.
+deny = [
+    { name = "reqwest" },
+    { name = "hyper" },
+    { name = "ureq" },
+    { name = "curl" },
+    { name = "isahc" },
+    { name = "surf" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

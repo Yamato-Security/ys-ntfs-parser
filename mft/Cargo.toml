@@ -1,0 +1,89 @@
+[package]
+name = "ys-mft-parser"
+description = "A Fast (and safe) parser for the Windows Master File Table (MFT) format"
+homepage = "https://github.com/Yamato-Security/ys-mft-parser"
+repository = "https://github.com/Yamato-Security/ys-mft-parser"
+license = "RPL-1.5 AND (MIT OR Apache-2.0)"
+readme = "README.md"
+
+version = "1.0.0"
+# Yamato Security fork of the upstream `mft` crate: not published under the upstream name.
+publish = false
+authors = ["Omer Ben-Amram", "Zach Mathis (@yamatosecurity)"]
+edition = "2024"
+rust-version = "1.99"
+# Keep the published crate under crates.io's 10MB limit: the disk images under testdata/ are only
+# needed by the repo's integration tests. samples/ stays, since unit tests and the benchmark read it.
+include = ["/src/", "/samples/", "/README.md", "/CHANGELOG.md", "/LICENSE-*"]
+
+# The library keeps upstream's name, so code using it reads `use mft::…`.
+[lib]
+name = "mft"
+
+[workspace]
+members = [
+    ".",
+    "crates/forensic-image",
+    "crates/aff",
+    "crates/ewf",
+    "crates/ntfs",
+    "crates/ntfs-explorer-gui",
+    "crates/dfxml",
+]
+
+[profile.release]
+# A single codegen unit + thin LTO lets serde's deeply generic serialization code inline across
+# crate boundaries (see PERF.md, H7).
+codegen-units = 1
+lto = "thin"
+
+[dependencies]
+log = "0.4"
+byteorder = "1"
+bitflags = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+csv = "1"
+thiserror = "2"
+num-traits = "0.2"
+num-derive = "0.5"
+winstructs = "0.3.2"
+lru = "0.19.0"
+itertools = "0.15"
+jiff = { version = "0.2.38", default-features = false, features = ["std", "alloc", "serde", "perf-inline"] }
+
+# `ys-mft-parser` dependencies
+clap = { version = "4", optional = true }
+anyhow = { version = "1.0", optional = true }
+simplelog = { version = "0.12", optional = true }
+dialoguer = { version = "0.12", optional = true }
+indoc = { version = "2.0", optional = true }
+sonic-rs = { version = "0.5.10", optional = true }
+utf16-simd = "0.1.1"
+
+[features]
+default = ["ys-mft-parser"]
+ys-mft-parser = ["anyhow", "simplelog", "dialoguer", "indoc", "clap", "sonic-rs", "log/release_max_level_debug"]
+
+[dev-dependencies]
+criterion = "0.8"
+doc-comment = "0.3"
+assert_cmd = "2.2.2"
+predicates = "3.1"
+env_logger = "0.11"
+tempfile = "3.27"
+insta = "1.49"
+
+# rexpect relies on unix process semantics, but it's only used for process interaction tests.
+[target.'cfg(not(target_os = "windows"))'.dev-dependencies]
+rexpect = "0.7"
+
+
+[[bin]]
+name = "ys-mft-parser"
+required-features = ["ys-mft-parser"]
+
+[[bench]]
+name = "benchmark"
+path = "./src/benches/benchmark.rs"
+harness = false

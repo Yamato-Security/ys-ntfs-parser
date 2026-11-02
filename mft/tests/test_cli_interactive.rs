@@ -1,0 +1,113 @@
+// Copyright (C) 2026 Shirofune Security Co., Ltd.
+// Copyright (c) 2019 Omer Ben-Amram
+//
+// This file is changed from omerbenamram/mft (https://github.com/omerbenamram/mft), whose code is
+// under the MIT License or the Apache License 2.0 (LICENSE-MIT, LICENSE-APACHE).
+//
+// Unless explicitly acquired and licensed from Licensor under another license, the contents of this
+// file are subject to the Reciprocal Public License ("RPL") Version 1.5, or subsequent versions as
+// allowed by the RPL, and You may not copy or use this file in either source code or executable
+// form, except in compliance with the terms and conditions of the RPL.
+//
+// All software distributed under the RPL is provided strictly on an "AS IS" basis, WITHOUT WARRANTY
+// OF ANY KIND, EITHER EXPRESS OR IMPLIED, AND LICENSOR HEREBY DISCLAIMS ALL SUCH WARRANTIES,
+// INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+// PURPOSE, QUIET ENJOYMENT, OR NON-INFRINGEMENT. See the RPL for specific language governing rights
+// and limitations under the RPL.
+
+/// The interactive tests are in a separate file,
+/// since they use `rexpect`, which internally uses quirky fork semantics to open a pty.
+/// They will fail if tried to be executed concurrently any other CLI test.
+mod fixtures;
+
+#[cfg(target_os = "windows")]
+mod tests {}
+
+#[cfg(not(target_os = "windows"))]
+mod tests {
+    use super::fixtures::*;
+
+    use rexpect::spawn;
+    use std::fs::File;
+    use std::io::{Read, Write};
+    use tempfile::tempdir;
+
+    fn ys_mft_parser_path() -> &'static std::path::Path {
+        assert_cmd::cargo_bin!("ys-mft-parser")
+    }
+
+    // It should behave the same on windows, but interactive testing relies on unix pty internals.
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn test_it_confirms_before_overwriting_a_file() {
+        let d = tempdir().unwrap();
+        let f = d.as_ref().join("test.out");
+
+        let mut file = File::create(&f).unwrap();
+        file.write_all(b"I'm a file!").unwrap();
+
+        let sample = mft_sample();
+
+        let cmd_string = format!(
+            "{bin} -f {output_file} {sample}",
+            bin = ys_mft_parser_path().display(),
+            output_file = f.to_string_lossy(),
+            sample = sample.to_str().unwrap()
+        );
+
+        let mut p = spawn(&cmd_string, Some(1000)).unwrap();
+        p.exp_regex(r#"Are you sure you want to override.*"#)
+            .unwrap();
+        p.send_line("y").unwrap();
+        p.flush().unwrap();
+        // .expect_eof doesn't work any more :(
+        // Poll instead of sleeping for a fixed time, slow CI runners can take a while to write.
+        let mut expected = vec![];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            expected.clear();
+            File::open(&f).unwrap().read_to_end(&mut expected).unwrap();
+            if expected.len() > 100 || std::time::Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            expected.len() > 100,
+            "Expected output to be printed to file"
+        )
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn test_it_confirms_before_overwriting_a_file_and_quits() {
+        let d = tempdir().unwrap();
+        let f = d.as_ref().join("test.out");
+
+        let mut file = File::create(&f).unwrap();
+        file.write_all(b"I'm a file!").unwrap();
+
+        let sample = mft_sample();
+
+        let cmd_string = format!(
+            "{bin} -f {output_file} {sample}",
+            bin = ys_mft_parser_path().display(),
+            output_file = f.to_string_lossy(),
+            sample = sample.to_str().unwrap()
+        );
+
+        let mut p = spawn(&cmd_string, Some(10000)).unwrap();
+        p.exp_regex(r#"Are you sure you want to override.*"#)
+            .unwrap();
+        p.send_line("n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let mut expected = vec![];
+
+        File::open(&f).unwrap().read_to_end(&mut expected).unwrap();
+        assert!(
+            !expected.len() > 100,
+            "Expected output to be printed to file"
+        )
+    }
+}

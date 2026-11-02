@@ -1,0 +1,35 @@
+[package]
+name = "ewf"
+description = "Expert Witness Compression Format (EWF) reader/writer"
+homepage = "https://github.com/omerbenamram/mft"
+repository = "https://github.com/omerbenamram/mft"
+license = "RPL-1.5 AND (MIT OR Apache-2.0)"
+readme = "README.md"
+
+version = "0.1.0"
+authors = ["Omer Ben-Amram", "Zach Mathis (@yamatosecurity)"]
+edition = "2024"
+rust-version = "1.99"
+
+[dependencies]
+thiserror = "2"
+byteorder = "1"
+log = { version = "0.4", features = ["release_max_level_debug"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+lru = "0.19.0"
+md-5 = "0.11"
+sha1 = "0.11"
+rand = "0.10"
+clap = { version = "4", features = ["derive"] }
+miette = { version = "7", features = ["fancy"] }
+dfxml = { path = "../dfxml" }
+jiff = { version = "0.2.38", default-features = false, features = ["std", "alloc", "tz-system", "tzdb-zoneinfo"] }
+textwrap = "0.16.4"
+quick-xml = "0.42.0"
+binrw = "0.15.2"
+bitflags = "2.13.2"
+
+[dev-dependencies]
+doc-comment = "0.3"
+tempfile = "3.27"
+

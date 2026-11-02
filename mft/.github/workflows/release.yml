@@ -1,0 +1,164 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+jobs:
+  # Fails a bad tag or a missing crates.io token before anything is built or published.
+  preflight:
+    name: Check tag and secrets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Check tag matches Cargo.toml
+        run: |
+          CRATE="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          [ "$CRATE" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != Cargo.toml $CRATE"; exit 1; }
+
+      - name: Check CRATES_IO_TOKEN is set
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: '[ -n "$CARGO_REGISTRY_TOKEN" ] || { echo "CRATES_IO_TOKEN secret is not set"; exit 1; }'
+
+  build-release:
+    name: Build release binaries
+    needs: preflight
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: llvm-tools
+
+      - name: Add llvm-tools to PATH (for PGO)
+        if: runner.os != 'Windows'
+        shell: bash
+        # A block scalar: a plain `run:` value can't contain `host: ` (YAML reads it as a mapping).
+        run: |
+          echo "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/bin" >> "$GITHUB_PATH"
+
+      - name: Install musl tooling
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends musl-tools
+
+      - name: Install cross toolchain (zig)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.11.0
+
+      - name: Build release binary (aarch64-linux)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          cargo install cargo-zigbuild
+          cargo zigbuild --release --target ${{ matrix.target }}
+
+      # Native targets get a profile-guided build (see PERF.md, H10).
+      - name: Build release binary (PGO)
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'macOS'
+        shell: bash
+        run: TARGET=${{ matrix.target }} ./build_pgo.sh
+
+      - name: Build release binary
+        if: matrix.target == 'x86_64-unknown-linux-musl' || runner.os == 'Windows'
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="target/${{ matrix.target }}/release"
+          version="${GITHUB_REF_NAME}"
+          mkdir -p dist
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            src="${release_dir}/ys-mft-parser.exe"
+            dest="dist/ys-mft-parser-${version}-${{ matrix.target }}.exe"
+          else
+            src="${release_dir}/ys-mft-parser"
+            dest="dist/ys-mft-parser-${version}-${{ matrix.target }}"
+          fi
+          cp "${src}" "${dest}"
+          if [[ "${{ runner.os }}" != "Windows" ]]; then
+            chmod +x "${dest}"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ys-mft-parser-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub release
+    needs: build-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: Show downloaded artifacts
+        run: ls -R dist
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/**
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-crate:
+    name: Publish to crates.io
+    # Last: crates.io is irreversible, so only publish once every binary built and the release exists.
+    needs: publish-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish mft
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: cargo publish -p ys-mft-parser

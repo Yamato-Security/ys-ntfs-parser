@@ -1,0 +1,663 @@
+// Copyright (C) 2026 Shirofune Security Co., Ltd.
+// Copyright (c) 2019 Omer Ben-Amram
+//
+// This file is changed from omerbenamram/mft (https://github.com/omerbenamram/mft), whose code is
+// under the MIT License or the Apache License 2.0 (LICENSE-MIT, LICENSE-APACHE).
+//
+// Unless explicitly acquired and licensed from Licensor under another license, the contents of this
+// file are subject to the Reciprocal Public License ("RPL") Version 1.5, or subsequent versions as
+// allowed by the RPL, and You may not copy or use this file in either source code or executable
+// form, except in compliance with the terms and conditions of the RPL.
+//
+// All software distributed under the RPL is provided strictly on an "AS IS" basis, WITHOUT WARRANTY
+// OF ANY KIND, EITHER EXPRESS OR IMPLIED, AND LICENSOR HEREBY DISCLAIMS ALL SUCH WARRANTIES,
+// INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+// PURPOSE, QUIET ENJOYMENT, OR NON-INFRINGEMENT. See the RPL for specific language governing rights
+// and limitations under the RPL.
+
+#![forbid(unsafe_code)]
+use clap::{Arg, ArgAction, ArgMatches};
+use indoc::indoc;
+use log::Level;
+use serde::Serialize;
+
+use mft::MftEntry;
+use mft::attribute::MftAttributeType;
+use mft::mft::MftParser;
+
+use dialoguer::Confirm;
+use mft::csv::FlatMftEntryWithName;
+
+use anyhow::anyhow;
+use anyhow::{Context, Error, Result};
+use sonic_rs as sonic_json;
+use std::backtrace::Backtrace;
+use std::fmt;
+use std::fs::File;
+use std::io::{BufWriter, Read, Seek, Write};
+use std::path::{Path, PathBuf};
+
+use mft::entry::ZERO_HEADER;
+use std::ops::RangeInclusive;
+use std::str::FromStr;
+use std::{fs, io, path};
+
+#[derive(Debug, PartialOrd, PartialEq)]
+#[allow(clippy::upper_case_acronyms)]
+enum OutputFormat {
+    JSON,
+    JSONL,
+    CSV,
+    Bodyfile,
+}
+
+impl OutputFormat {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "json" => Some(OutputFormat::JSON),
+            "jsonl" => Some(OutputFormat::JSONL),
+            "csv" => Some(OutputFormat::CSV),
+            "bodyfile" => Some(OutputFormat::Bodyfile),
+            _ => None,
+        }
+    }
+}
+
+struct Ranges(Vec<RangeInclusive<usize>>);
+
+impl Ranges {
+    pub fn chain(&self) -> impl Iterator<Item = usize> + '_ {
+        self.0.iter().cloned().flatten()
+    }
+}
+
+impl FromStr for Ranges {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        let mut ranges = vec![];
+        for x in s.split(',') {
+            // range
+            if x.contains('-') {
+                let range: Vec<&str> = x.split('-').collect();
+                if range.len() != 2 {
+                    return Err(anyhow!(
+                        "Failed to parse ranges: Range should contain exactly one `-`, found {x}"
+                    ));
+                }
+
+                ranges.push(range[0].parse()?..=range[1].parse()?);
+            } else {
+                let n = x.parse()?;
+                ranges.push(n..=n);
+            }
+        }
+
+        Ok(Ranges(ranges))
+    }
+}
+
+/// A JSON output record: the entry plus its full path, which only the parser can resolve.
+#[derive(Serialize)]
+struct JsonEntry<'a> {
+    #[serde(serialize_with = "mft::serialize_option_windows_path")]
+    full_path: Option<PathBuf>,
+    #[serde(flatten)]
+    entry: &'a MftEntry,
+}
+
+struct MftDump {
+    filepath: PathBuf,
+    // We use an option here to be able to move the output out of mftdump from a mutable reference.
+    output: Option<Box<dyn Write>>,
+    data_streams_output: Option<PathBuf>,
+    verbosity_level: Option<Level>,
+    output_format: OutputFormat,
+    ranges: Option<Ranges>,
+    json_buf: Vec<u8>,
+    backtraces_enabled: bool,
+}
+
+impl MftDump {
+    pub fn from_cli_matches(matches: &ArgMatches) -> Result<Self> {
+        let output_format: &String = matches.get_one("output-format").expect("has default");
+        let output_target: Option<&String> = matches.get_one("output-target");
+        let data_streams_target: Option<&String> = matches.get_one("data-streams-target");
+        let input: &String = matches.get_one("INPUT").expect("required");
+
+        let output_format =
+            OutputFormat::from_str(output_format).expect("Validated with clap default values");
+        let backtraces_enabled = matches.get_flag("backtraces");
+
+        let output: Option<Box<dyn Write>> = if let Some(path) = output_target {
+            match Self::create_output_file(path, !matches.get_flag("no-confirm-overwrite")) {
+                Ok(f) => Some(Box::new(BufWriter::with_capacity(1 << 16, f))),
+                Err(e) => {
+                    return Err(anyhow!(
+                        "An error occurred while creating output file at `{path}` - `{e}`"
+                    ));
+                }
+            }
+        } else {
+            Some(Box::new(BufWriter::with_capacity(1 << 16, io::stdout())))
+        };
+
+        let data_streams_output = if let Some(path) = data_streams_target {
+            let path = PathBuf::from(path);
+            Self::create_output_dir(&path)?;
+            Some(path)
+        } else {
+            None
+        };
+
+        let verbosity_level = match matches.get_count("verbose") {
+            0 => None,
+            1 => Some(Level::Info),
+            2 => Some(Level::Debug),
+            3 => Some(Level::Trace),
+            _ => {
+                eprintln!("using more than  -vvv does not affect verbosity level");
+                Some(Level::Trace)
+            }
+        };
+
+        let ranges = match matches.get_one::<String>("entry-range") {
+            Some(range) => Some(Ranges::from_str(range)?),
+            None => None,
+        };
+
+        Ok(MftDump {
+            filepath: PathBuf::from(input),
+            output,
+            data_streams_output,
+            verbosity_level,
+            output_format,
+            ranges,
+            json_buf: Vec::with_capacity(64 * 1024),
+            backtraces_enabled,
+        })
+    }
+
+    fn create_output_dir(path: impl AsRef<Path>) -> Result<()> {
+        let p = path.as_ref();
+
+        if p.exists() {
+            if !p.is_dir() {
+                return Err(anyhow!(
+                    "There is a file at {}, refusing to overwrite",
+                    p.display()
+                ));
+            }
+        // p exists and is a directory, it's ok to add files.
+        } else {
+            fs::create_dir_all(path)?
+        }
+
+        Ok(())
+    }
+
+    /// If `prompt` is passed, will display a confirmation prompt before overwriting files.
+    fn create_output_file(path: impl AsRef<Path>, prompt: bool) -> Result<File> {
+        let p = path.as_ref();
+
+        if p.is_dir() {
+            return Err(anyhow!(
+                "There is a directory at {}, refusing to overwrite",
+                p.display()
+            ));
+        }
+
+        if p.exists() {
+            if prompt {
+                match Confirm::new()
+                    .with_prompt(format!(
+                        "Are you sure you want to override output file at {}",
+                        p.display()
+                    ))
+                    .default(false)
+                    .interact()
+                {
+                    Ok(true) => Ok(File::create(p)?),
+                    Ok(false) => Err(anyhow!("Cancelled")),
+                    Err(e) => Err(anyhow!(
+                        "Failed to write confirmation prompt to term caused by\n{e}"
+                    )),
+                }
+            } else {
+                Ok(File::create(p)?)
+            }
+        } else {
+            // Ok to assume p is not an existing directory
+            match p.parent() {
+                Some(parent) =>
+                // Parent exist
+                {
+                    if parent.exists() {
+                        Ok(File::create(p)?)
+                    } else {
+                        fs::create_dir_all(parent)?;
+                        Ok(File::create(p)?)
+                    }
+                }
+                None => Err(anyhow!("Output file cannot be root.")),
+            }
+        }
+    }
+
+    /// Main entry point for `EvtxDump`
+    pub fn run(&mut self) -> Result<()> {
+        self.try_to_initialize_logging();
+
+        let mut parser = MftParser::from_path(&self.filepath)?;
+
+        // Since the JSON parser can do away with a &mut Write, but the csv parser needs ownership
+        // of `Write`, we eagerly create the csv writer here, moving the Box<Write> out from
+        // `Mftdump` and replacing it with None placeholder.
+        let mut csv_writer = match self.output_format {
+            OutputFormat::CSV => {
+                Some(csv::Writer::from_writer(self.output.take().expect(
+                    "There can only be one flow accessing the output at a time",
+                )))
+            }
+            _ => None,
+        };
+
+        let number_of_entries = parser.get_entry_count();
+
+        // Move ranges out of self here to avoid immutably locking self during
+        // the `for i in entries` loop.
+        let take_ranges = self.ranges.take();
+
+        let entries = match take_ranges {
+            Some(ref ranges) => Box::new(ranges.chain()),
+            None => Box::new(0..number_of_entries as usize) as Box<dyn Iterator<Item = usize>>,
+        };
+
+        for i in entries {
+            let entry = parser.get_entry(i as u64);
+
+            let entry = match entry {
+                Ok(entry) => match &entry.header.signature {
+                    ZERO_HEADER => continue,
+                    _ => entry,
+                },
+                Err(error) => {
+                    eprintln!("{error}");
+                    continue;
+                }
+            };
+
+            let full_path = parser.get_full_path_for_entry(&entry).ok().flatten();
+            // Exported streams, CSV and bodyfile describe a file rather than one record, so they
+            // include the attributes stored in its extension records.
+            let extensions = if self.data_streams_output.is_some()
+                || matches!(
+                    self.output_format,
+                    OutputFormat::CSV | OutputFormat::Bodyfile
+                ) {
+                parser.get_extension_entries(&entry)
+            } else {
+                Vec::new()
+            };
+
+            if let Some(data_streams_dir) = &self.data_streams_output
+                // An extension record's streams are exported with its base entry, under the
+                // file's path. Only an extension that its base entry doesn't list exports its own.
+                && (entry.header.is_base_record() || !is_listed_by_its_base(&mut parser, &entry))
+                && let Some(path) = &full_path
+            {
+                let sanitized_path = sanitized(&path.to_string_lossy());
+
+                for (i, (name, stream)) in std::iter::once(&entry)
+                    .chain(&extensions)
+                    .flat_map(|record| record.iter_attributes())
+                    .filter_map(|a| a.ok())
+                    .filter_map(|a| {
+                        if a.header.type_code == MftAttributeType::DATA {
+                            // resident
+                            let name = a.header.name;
+                            a.data
+                                .as_data()
+                                .copied()
+                                // Empty streams carry no content, don't litter the output with them.
+                                .filter(|data| !data.data().is_empty())
+                                .map(|data| (name, data))
+                        } else {
+                            None
+                        }
+                    })
+                    .enumerate()
+                {
+                    // The entry number and sequence keep the names unique and the same on every
+                    // run; only the file name is shortened, never the output directory.
+                    let truncated: String = sanitized_path.chars().take(150).collect();
+                    let file_name = format!(
+                        "{truncated}__{}-{}_{i}_{}.dontrun",
+                        entry.header.record_number,
+                        entry.header.sequence,
+                        sanitized(&name.to_string())
+                            .chars()
+                            .take(60)
+                            .collect::<String>()
+                    );
+                    let data_stream_path = data_streams_dir.join(file_name);
+
+                    if data_stream_path.exists() {
+                        return Err(anyhow!(
+                            "The resident stream file {} already exists; extract into an empty directory.",
+                            data_stream_path.display()
+                        ));
+                    }
+
+                    let mut f = File::create(&data_stream_path)?;
+                    f.write_all(stream.data())?;
+                }
+            }
+
+            match self.output_format {
+                OutputFormat::JSON | OutputFormat::JSONL => {
+                    self.print_json_entry(&entry, full_path)?
+                }
+                OutputFormat::Bodyfile => {
+                    self.print_bodyfile_entry(&entry, &extensions, full_path)?
+                }
+                OutputFormat::CSV => self.print_csv_entry(
+                    &entry,
+                    &extensions,
+                    full_path,
+                    csv_writer
+                        .as_mut()
+                        .expect("CSV Writer is for OutputFormat::CSV"),
+                )?,
+            }
+        }
+
+        Ok(())
+    }
+
+    fn try_to_initialize_logging(&self) {
+        if let Some(level) = self.verbosity_level {
+            match simplelog::WriteLogger::init(
+                level.to_level_filter(),
+                simplelog::Config::default(),
+                io::stderr(),
+            ) {
+                Ok(_) => {}
+                Err(e) => eprintln!("Failed to initialize logging: {e}"),
+            };
+        }
+    }
+
+    pub fn print_json_entry(&mut self, entry: &MftEntry, full_path: Option<PathBuf>) -> Result<()> {
+        let out = self
+            .output
+            .as_mut()
+            .expect("CSV Flow cannot occur, so `Mftdump` should still Own `output`");
+
+        let json_entry = JsonEntry { full_path, entry };
+
+        self.json_buf.clear();
+        if self.output_format == OutputFormat::JSON {
+            sonic_json::to_writer_pretty(&mut self.json_buf, &json_entry)?;
+        } else {
+            // JSONL is the performance-critical mode; use a faster serializer.
+            sonic_json::to_writer(&mut self.json_buf, &json_entry)?;
+        }
+        self.json_buf.push(b'\n');
+        out.write_all(&self.json_buf)?;
+
+        Ok(())
+    }
+
+    pub fn print_bodyfile_entry(
+        &mut self,
+        entry: &MftEntry,
+        extensions: &[MftEntry],
+        full_path: Option<PathBuf>,
+    ) -> Result<()> {
+        let out = self
+            .output
+            .as_mut()
+            .expect("Bodyfile flow keeps `output`, it is only taken by the CSV writer");
+
+        mft::bodyfile::write_entry(out, entry, extensions, &full_path.unwrap_or_default())?;
+
+        Ok(())
+    }
+
+    pub fn print_csv_entry<W: Write>(
+        &self,
+        entry: &MftEntry,
+        extensions: &[MftEntry],
+        full_path: Option<PathBuf>,
+        writer: &mut csv::Writer<W>,
+    ) -> Result<()> {
+        let flat_entry = FlatMftEntryWithName::from_entry_with_path(
+            entry,
+            extensions,
+            full_path.unwrap_or_default(),
+        );
+
+        writer.serialize(flat_entry)?;
+
+        Ok(())
+    }
+
+    fn annotate_error(&self, err: Error) -> Error {
+        annotate_with_backtrace(err, self.backtraces_enabled)
+    }
+}
+
+/// Whether `entry` is one of the extension records that its base entry's `$ATTRIBUTE_LIST`
+/// leads to.
+fn is_listed_by_its_base<T: Read + Seek>(parser: &mut MftParser<T>, entry: &MftEntry) -> bool {
+    let record_number = entry.header.record_number;
+    parser
+        .get_entry(entry.header.base_reference.entry)
+        .is_ok_and(|base| {
+            parser
+                .get_extension_entries(&base)
+                .iter()
+                .any(|e| e.header.record_number == record_number)
+        })
+}
+
+// adapter from python version
+// https://github.com/pallets/werkzeug/blob/9394af646038abf8b59d6f866a1ea5189f6d46b8/src/werkzeug/utils.py#L414
+/// `component` as one file name: path separators, characters Windows does not allow in file names
+/// and control characters become `_`, so a name from the evidence (`../../x`, `a:b`) can neither
+/// leave the output directory nor fail to be created.
+pub fn sanitized(component: &str) -> String {
+    let mut buf = String::with_capacity(component.len());
+    for c in component.chars() {
+        match c {
+            _ if path::is_separator(c)
+                || c.is_control()
+                || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') =>
+            {
+                buf.push('_')
+            }
+            _ => buf.push(c),
+        }
+    }
+
+    buf
+}
+
+fn main() -> Result<()> {
+    let matches = clap::Command::new("MFT Parser")
+        .version(env!("CARGO_PKG_VERSION"))
+        .author("Omer B. <omerbenamram@gmail.com>")
+        .about("Utility for parsing MFT snapshots")
+        .arg(Arg::new("INPUT").required(true))
+        .arg(
+            Arg::new("output-format")
+                .short('o')
+                .long("output-format")
+                .action(ArgAction::Set)
+                .value_parser(clap::builder::PossibleValuesParser::new(["csv", "json", "jsonl", "bodyfile"]))
+                .default_value("json")
+                .help("Output format. `bodyfile` writes Sleuth Kit bodyfile lines (like `fls -m`) for mactime."),
+        )
+        .arg(
+            Arg::new("entry-range")
+                .long("ranges")
+                .short('r')
+                .action(ArgAction::Set)
+                .help(indoc!("Dumps only the given entry range(s), for example, `1-15,30` will dump entries 1-15, and 30")),
+        )
+        .arg(
+            Arg::new("output-target")
+                .long("output")
+                .short('f')
+                .action(ArgAction::Set)
+                .help(indoc!("Writes output to the file specified instead of stdout, errors will still be printed to stderr.
+                       Will ask for confirmation before overwriting files, to allow overwriting, pass `--no-confirm-overwrite`
+                       Will create parent directories if needed.")),
+        )
+        .arg(
+            Arg::new("data-streams-target")
+                .long("extract-resident-streams")
+                .short('e')
+                .action(ArgAction::Set)
+                .help(indoc!("Writes resident data streams to the given directory.
+                             Resident streams will be named like - `{path}__{entry}-{sequence}_{stream_number}_{stream_name}.dontrun`
+                             (the entry number and sequence keep the names unique).")),
+        )
+        .arg(
+            Arg::new("no-confirm-overwrite")
+                .long("no-confirm-overwrite")
+                .action(ArgAction::SetTrue)
+                .help(indoc!("When set, will not ask for confirmation before overwriting files, useful for automation")),
+        )
+        .arg(Arg::new("verbose")
+            .short('v')
+            .action(ArgAction::Count)
+            .help(indoc!(r#"
+            Sets debug prints level for the application:
+                -v   - info
+                -vv  - debug
+                -vvv - trace
+            NOTE: trace output is only available in debug builds, as it is extremely verbose."#))
+        )
+        .arg(
+            Arg::new("backtraces")
+                .long("backtraces")
+                .action(ArgAction::SetTrue)
+                .help("If set, a backtrace will be printed with some errors if available"))
+        .get_matches();
+
+    let backtraces_enabled = matches.get_flag("backtraces");
+
+    let mut app = MftDump::from_cli_matches(&matches)
+        .map_err(|err| annotate_with_backtrace(err, backtraces_enabled))
+        .context("Failed setting up the app")?;
+    app.run()
+        .map_err(|err| app.annotate_error(err))
+        .context("A runtime error has occurred")?;
+
+    Ok(())
+}
+
+fn annotate_with_backtrace(err: Error, enabled: bool) -> Error {
+    if !enabled {
+        return err;
+    }
+
+    let backtrace = Backtrace::force_capture();
+    err.context(ForcedBacktrace(backtrace))
+}
+
+struct ForcedBacktrace(Backtrace);
+
+impl fmt::Display for ForcedBacktrace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Backtrace (captured via --backtraces):")?;
+        write!(f, "{}", self.0)
+    }
+}
+
+impl fmt::Debug for ForcedBacktrace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("ForcedBacktrace").field(&self.0).finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MftParser, Path, Ranges, is_listed_by_its_base, sanitized};
+    use std::str::FromStr;
+
+    #[test]
+    fn sanitized_names_stay_in_the_output_directory() {
+        assert_eq!(sanitized("../../evil"), ".._.._evil");
+        assert_eq!(sanitized("a\\b/c"), "a_b_c");
+        assert_eq!(
+            sanitized("file.txt:Zone.Identifier"),
+            "file.txt_Zone.Identifier"
+        );
+        assert_eq!(sanitized("x*?\"<>|\u{7}y"), "x_______y");
+    }
+
+    #[test]
+    fn it_works_with_single_number() {
+        let ranges = Ranges::from_str("1").unwrap();
+        assert_eq!(ranges.0, vec![1..=1]);
+    }
+
+    #[test]
+    fn it_works_with_a_range() {
+        let ranges = Ranges::from_str("1-5").unwrap();
+        assert_eq!(ranges.0, vec![1..=5]);
+    }
+
+    #[test]
+    fn it_works_with_a_range_and_a_number() {
+        let ranges = Ranges::from_str("1-5,8").unwrap();
+        assert_eq!(ranges.0, vec![1..=5, 8..=8]);
+    }
+
+    #[test]
+    fn it_works_with_a_number_and_a_range() {
+        let ranges = Ranges::from_str("1-5,8").unwrap();
+        assert_eq!(ranges.0, vec![1..=5, 8..=8]);
+    }
+
+    #[test]
+    fn it_works_with_more_than_2_number_and_a_range() {
+        let ranges = Ranges::from_str("1-5,8,10-19").unwrap();
+        assert_eq!(ranges.0, vec![1..=5, 8..=8, 10..=19]);
+    }
+
+    #[test]
+    fn it_works_with_two_ranges() {
+        let ranges = Ranges::from_str("1-10,20-25").unwrap();
+        assert_eq!(ranges.0, vec![1..=10, 20..=25]);
+    }
+
+    #[test]
+    fn it_errors_on_a_random_string() {
+        let ranges = Ranges::from_str("hello");
+        assert!(ranges.is_err())
+    }
+
+    #[test]
+    fn it_errors_on_a_range_with_too_many_dashes() {
+        let ranges = Ranges::from_str("1-5-8");
+        assert!(ranges.is_err())
+    }
+
+    #[test]
+    fn extension_records_are_exported_with_their_base_entry() {
+        let sample = Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/ntfs1-gen2.MFT");
+        let mut parser = MftParser::from_path(sample).unwrap();
+
+        // Record 52 is one of the extension records listed by record 47.
+        let extension = parser.get_entry(52).unwrap();
+        assert!(is_listed_by_its_base(&mut parser, &extension));
+
+        // Record 47 is a base record, and isn't one of `$MFT`'s extensions.
+        let base = parser.get_entry(47).unwrap();
+        assert!(!is_listed_by_its_base(&mut parser, &base));
+    }
+}

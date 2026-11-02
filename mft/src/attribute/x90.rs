@@ -50,8 +50,8 @@ pub struct IndexRootAttr<'a> {
 }
 
 /// Enum sources:
-/// https://opensource.apple.com/source/ntfs/ntfs-52/kext/ntfs_layout.h
-/// https://docs.huihoo.com/doxygen/linux/kernel/3.7/layout_8h_source.html
+/// <https://opensource.apple.com/source/ntfs/ntfs-52/kext/ntfs_layout.h>
+/// <https://docs.huihoo.com/doxygen/linux/kernel/3.7/layout_8h_source.html>
 ///
 #[derive(Serialize, Debug, Copy, Clone, Eq, PartialEq)]
 #[repr(u32)]

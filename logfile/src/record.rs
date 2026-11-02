@@ -193,7 +193,7 @@ impl Update {
     /// offset in `$J`, which is the USN of the first of them. Records the
     /// journal no longer has (wrapped, or written after a copy of it was
     /// made) are still here: parse `data` with a USN record parser such as
-    /// ys-usn-journal-parser's and add `offset` to place them.
+    /// the usn crate's (`usn/`) and add `offset` to place them.
     #[must_use]
     pub fn journal_write(&self) -> Option<JournalWrite<'_>> {
         let target = self.target.as_ref()?;

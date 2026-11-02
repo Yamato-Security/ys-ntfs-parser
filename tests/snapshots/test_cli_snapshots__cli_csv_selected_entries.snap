@@ -1,5 +1,5 @@
 ---
-source: tests/test_snapshots.rs
+source: tests/test_cli_snapshots.rs
 expression: stdout
 ---
 Signature,EntryId,Sequence,BaseEntryId,BaseEntrySequence,HardLinkCount,Flags,UsedEntrySize,TotalEntrySize,FileSize,IsADirectory,IsDeleted,HasAlternateDataStreams,StandardInfoFlags,StandardInfoLastModified,StandardInfoLastAccess,StandardInfoCreated,FileNameFlags,FileNameLastModified,FileNameLastAccess,FileNameCreated,FullPath,StandardInfoLastMftModified,FileNameLastMftModified

@@ -18,13 +18,7 @@
 use std::path::PathBuf;
 
 pub fn mft_sample_name(filename: &str) -> PathBuf {
-    PathBuf::from(file!())
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("samples")
         .join(filename)
 }

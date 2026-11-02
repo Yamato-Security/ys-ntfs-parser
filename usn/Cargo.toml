@@ -1,16 +1,15 @@
 [package]
-name = "ys-usn-journal-parser"
+name = "ys-ntfs-parser-usn"
 version = "1.0.0"
 authors = ["Florian Amette", "Zach Mathis (@yamatosecurity)"]
 # Yamato Security's fork of the upstream `sootmark-usn` crate: not published under the upstream name.
 publish = false
 edition = "2024"
-# The `mft` feature needs 1.90 (ys-mft-parser).
 rust-version = "1.99"
 description = "NTFS USN change journal ($UsnJrnl:$J): every V2, V3 and V4 record, read straight through sparse zeros and damage, with reasons, references, names, paths rewound to each record's time, and carving."
 license = "RPL-1.5 AND (MIT OR Apache-2.0)"
-repository = "https://github.com/Yamato-Security/ys-usn-journal-parser"
-homepage = "https://github.com/Yamato-Security/ys-usn-journal-parser"
+repository = "https://github.com/Yamato-Security/ys-ntfs-parser"
+homepage = "https://github.com/Yamato-Security/ys-ntfs-parser"
 keywords = ["forensics", "dfir", "incident-response", "ntfs", "usn"]
 # Sources only: test fixtures stay in the repository.
 include = ["/src", "/README.md", "/LICENSE-APACHE", "/LICENSE-MIT"]
@@ -19,12 +18,11 @@ include = ["/src", "/README.md", "/LICENSE-APACHE", "/LICENSE-MIT"]
 name = "usn"
 
 [features]
-# PathBuilder::seed_from_mft, with Yamato Security's ys-mft-parser.
+# PathBuilder::seed_from_mft, with the workspace's mft crate (mft/).
 mft = ["dep:mft"]
 
 [dependencies]
-# The latest ys-mft-parser on its main branch (Cargo.lock records the commit used).
-mft = { package = "ys-mft-parser", git = "https://github.com/Yamato-Security/ys-mft-parser", version = "1.0", default-features = false, optional = true }
+mft = { package = "ys-ntfs-parser-mft", path = "../mft", optional = true }
 
 [dev-dependencies]
 proptest = "1"

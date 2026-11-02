@@ -1,0 +1,77 @@
+[package]
+name = "ys-ntfs-parser"
+version = "1.0.0"
+authors = ["Omer Ben-Amram", "Florian Amette", "Zach Mathis (@yamatosecurity)"]
+publish = false
+edition = "2024"
+rust-version = "1.99"
+description = "NTFS forensic artifacts: the Master File Table ($MFT, $I30 indexes, FILE record slack), the USN change journal ($UsnJrnl:$J) and the transaction journal ($LogFile), with the ys-ntfs-parser command"
+license = "RPL-1.5 AND (MIT OR Apache-2.0)"
+repository = "https://github.com/Yamato-Security/ys-ntfs-parser"
+homepage = "https://github.com/Yamato-Security/ys-ntfs-parser"
+readme = "README.md"
+keywords = ["forensics", "dfir", "ntfs", "mft", "usn"]
+
+# The ys-ntfs-parser command: $MFT to JSON, JSONL, CSV or a bodyfile.
+[[bin]]
+name = "ys-ntfs-parser"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[features]
+default = ["cli"]
+# The command. Libraries using this crate turn it off (default-features = false).
+cli = [
+    "dep:anyhow",
+    "dep:clap",
+    "dep:csv",
+    "dep:dialoguer",
+    "dep:indoc",
+    "dep:log",
+    "dep:serde",
+    "dep:simplelog",
+    "dep:sonic-rs",
+    "log/release_max_level_debug",
+]
+
+[dependencies]
+# The libraries keep their names: `mft::…`, `usn::…`, `ntfslog::…`.
+mft = { package = "ys-ntfs-parser-mft", path = "mft" }
+usn = { package = "ys-ntfs-parser-usn", path = "usn", features = ["mft"] }
+ntfslog = { package = "ys-ntfs-parser-logfile", path = "logfile" }
+
+anyhow = { version = "1.0", optional = true }
+clap = { version = "4", optional = true }
+csv = { version = "1", optional = true }
+dialoguer = { version = "0.12", optional = true }
+indoc = { version = "2.0", optional = true }
+log = { version = "0.4", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+simplelog = { version = "0.12", optional = true }
+sonic-rs = { version = "0.5.10", optional = true }
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+csv = "1"
+env_logger = "0.11"
+insta = "1.49"
+serde_json = "1"
+tempfile = "3.27"
+
+# rexpect relies on unix process semantics; it's only used for the command's interactive tests.
+[target.'cfg(not(target_os = "windows"))'.dev-dependencies]
+rexpect = "0.7"
+
+[workspace]
+members = ["mft", "usn", "logfile"]
+# cargo-fuzz keeps its own workspace.
+exclude = ["mft/fuzz"]
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+
+# logfile's test logs are 2 MiB once decompressed: an optimised inflater keeps its property
+# tests short.
+[profile.dev.package.miniz_oxide]
+opt-level = 3

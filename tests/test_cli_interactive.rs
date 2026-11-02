@@ -15,6 +15,8 @@
 // PURPOSE, QUIET ENJOYMENT, OR NON-INFRINGEMENT. See the RPL for specific language governing rights
 // and limitations under the RPL.
 
+#![cfg(feature = "cli")]
+
 /// The interactive tests are in a separate file,
 /// since they use `rexpect`, which internally uses quirky fork semantics to open a pty.
 /// They will fail if tried to be executed concurrently any other CLI test.
@@ -33,7 +35,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn ys_mft_parser_path() -> &'static std::path::Path {
-        assert_cmd::cargo_bin!("ys-mft-parser")
+        assert_cmd::cargo_bin!("ys-ntfs-parser")
     }
 
     // It should behave the same on windows, but interactive testing relies on unix pty internals.

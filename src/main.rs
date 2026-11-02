@@ -649,7 +649,7 @@ mod tests {
 
     #[test]
     fn extension_records_are_exported_with_their_base_entry() {
-        let sample = Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/ntfs1-gen2.MFT");
+        let sample = Path::new(env!("CARGO_MANIFEST_DIR")).join("mft/samples/ntfs1-gen2.MFT");
         let mut parser = MftParser::from_path(sample).unwrap();
 
         // Record 52 is one of the extension records listed by record 47.

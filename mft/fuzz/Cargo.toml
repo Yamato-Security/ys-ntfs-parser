@@ -12,8 +12,8 @@ libfuzzer-sys = "0.4"
 serde_json = "1"
 
 [dependencies.mft]
+package = "ys-ntfs-parser-mft"
 path = ".."
-default-features = false
 
 # Keep the fuzz crate out of the parent workspace.
 [workspace]

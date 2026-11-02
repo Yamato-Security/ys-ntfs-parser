@@ -12,7 +12,7 @@
 // and limitations under the RPL.
 
 //! Seeding [`PathBuilder`] from the volume's `$MFT` (feature `mft`), with
-//! Yamato Security's ys-mft-parser.
+//! the workspace's mft crate (`mft/`).
 
 use std::io::{Read, Seek};
 
@@ -70,7 +70,7 @@ impl PathBuilder {
     /// A directory's long name is often in an extension record (when its
     /// attributes did not fit in the base record), so its name is chosen
     /// across the base record and the extension records that still belong to
-    /// it (ys-mft-parser's `get_extension_entries`, which leaves out the
+    /// it (the mft crate's `get_extension_entries`, which leaves out the
     /// records a reused base record's previous owner left behind): Win32 over
     /// POSIX over DOS, whichever record holds it. A deleted directory is
     /// seeded with the sequence number the journal knew it by: NTFS raises it

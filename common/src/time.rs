@@ -15,9 +15,10 @@
 // PURPOSE, QUIET ENJOYMENT, OR NON-INFRINGEMENT. See the RPL for specific language governing rights
 // and limitations under the RPL.
 
-//! Record times: Windows FILETIMEs (100 ns intervals since 1601-01-01 UTC).
-//! Replaces `sootmark-common`'s general `Ts` with the raw value and the
-//! formatting it gave (MIT OR Apache-2.0).
+//! Times: Windows FILETIMEs (100 ns intervals since 1601-01-01 UTC).
+//! Replaces `sootmark-common`'s general `Ts` (MIT OR Apache-2.0, by the
+//! same author as the usn and logfile crates' upstreams) with the raw value
+//! and the formatting it gave.
 
 use core::fmt;
 
@@ -52,6 +53,15 @@ impl Filetime {
             0 | 0x7FFF_FFFF_FFFF_FFFF | u64::MAX => None,
             v => i64::try_from(v).ok().map(|v| v - FILETIME_UNIX_OFFSET),
         }
+    }
+
+    /// Whether it is a time in a year from `min_year` to `max_year`.
+    #[must_use]
+    pub fn year_within(self, min_year: i64, max_year: i64) -> bool {
+        self.unix_ticks().is_some_and(|ticks| {
+            let (year, _, _) = civil_from_days(ticks.div_euclid(TICKS_PER_DAY));
+            (min_year..=max_year).contains(&year)
+        })
     }
 
     /// `YYYY-MM-DDTHH:MM:SS.fffffffZ` with the full 100 ns precision; years
@@ -134,5 +144,13 @@ mod tests {
             Filetime::new(0x7FFF_FFFF_FFFF_FFFE).to_iso8601().as_deref(),
             Some("+030828-09-14T02:48:05.4775806Z")
         );
+    }
+
+    #[test]
+    fn years() {
+        let t = Filetime::new(125_911_584_000_000_000);
+        assert!(t.year_within(2000, 2000));
+        assert!(!t.year_within(2001, 2200));
+        assert!(!Filetime::new(0).year_within(1601, 9999));
     }
 }

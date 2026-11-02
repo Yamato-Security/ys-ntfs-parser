@@ -18,6 +18,8 @@ include = ["/src", "/README.md", "/LICENSE-APACHE", "/LICENSE-MIT"]
 name = "ntfslog"
 
 [dependencies]
+# The byte cursor, UTF-16 decoding and FILETIMEs shared with the other crates (common/).
+ntfs-common = { package = "ys-ntfs-parser-common", path = "../common" }
 
 [dev-dependencies]
 flate2 = "1"

@@ -16,7 +16,7 @@
 // and limitations under the RPL.
 
 //! UTF-16 names that never lose information: `sootmark-common`'s
-//! `text::utf16le` (MIT OR Apache-2.0).
+//! `text::utf16le` and `text::utf16le_until_nul` (MIT OR Apache-2.0).
 //!
 //! An unpaired surrogate (attacker-crafted names have them) is escaped as
 //! `\u{XXXX}` and an odd trailing byte as `\x{XX}` instead of being replaced
@@ -26,18 +26,31 @@ use core::fmt::Write;
 
 /// Decoded text plus whether the input needed escaping.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Decoded {
-    pub(crate) text: String,
-    pub(crate) escaped: bool,
+pub struct Decoded {
+    /// The text, with what couldn't be decoded escaped.
+    pub text: String,
+    /// Whether anything was escaped.
+    pub escaped: bool,
 }
 
 /// Decode UTF-16LE bytes in full (NULs included).
-pub(crate) fn utf16le(bytes: &[u8]) -> Decoded {
-    let whole_units = bytes.len() & !1;
-    let mut text = String::with_capacity(whole_units / 2);
+#[must_use]
+pub fn utf16le(bytes: &[u8]) -> Decoded {
+    decode(bytes, false)
+}
+
+/// Decode UTF-16LE bytes up to the first NUL unit.
+#[must_use]
+pub fn utf16le_until_nul(bytes: &[u8]) -> Decoded {
+    decode(bytes, true)
+}
+
+fn decode(bytes: &[u8], stop_at_nul: bool) -> Decoded {
+    let (units, trailing_byte) = split_units(bytes, stop_at_nul);
+    let mut text = String::with_capacity(units.len() / 2);
     let mut escaped = false;
     for item in char::decode_utf16(
-        bytes[..whole_units]
+        units
             .as_chunks::<2>()
             .0
             .iter()
@@ -51,11 +64,27 @@ pub(crate) fn utf16le(bytes: &[u8]) -> Decoded {
             }
         }
     }
-    if let Some(byte) = bytes.get(whole_units) {
+    if let Some(byte) = trailing_byte {
         escaped = true;
         let _ = write!(text, "\\x{{{byte:02x}}}");
     }
     Decoded { text, escaped }
+}
+
+/// The whole code units to decode, and a dangling odd byte if decoding runs
+/// to the end of the input.
+fn split_units(bytes: &[u8], stop_at_nul: bool) -> (&[u8], Option<u8>) {
+    let whole_units = bytes.len() & !1;
+    if stop_at_nul
+        && let Some(nul) = bytes[..whole_units]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .position(|c| c == &[0, 0])
+    {
+        return (&bytes[..nul * 2], None);
+    }
+    (&bytes[..whole_units], bytes.get(whole_units).copied())
 }
 
 #[cfg(test)]
@@ -79,5 +108,13 @@ mod tests {
             !utf16le(&le(&[0xD83D, 0xDE00])).escaped,
             "a surrogate pair is a character"
         );
+    }
+
+    #[test]
+    fn until_nul() {
+        assert_eq!(utf16le_until_nul(&le(&[0x24, 0x4A, 0, 0x41])).text, "$J");
+        assert_eq!(utf16le(&le(&[0x24, 0, 0x41])).text, "$\0A");
+        let odd = utf16le_until_nul(&[0x61, 0x00, 0x62]);
+        assert_eq!(odd.text, "a\\x{62}");
     }
 }

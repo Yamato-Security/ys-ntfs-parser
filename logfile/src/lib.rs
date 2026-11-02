@@ -98,7 +98,6 @@
 //! update writes to the change journal, with their offset in it.
 
 mod attributes;
-mod bytes;
 mod content;
 mod decoded;
 mod fixup;
@@ -109,9 +108,9 @@ mod problem;
 mod record;
 mod restart;
 mod targets;
-mod text;
-mod time;
 mod walk;
+
+use ntfs_common::{bytes, text, time};
 
 pub use attributes::OpenAttribute;
 pub use content::{FileName, Namespace, Reference, StandardTimes};

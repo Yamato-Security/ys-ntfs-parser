@@ -41,7 +41,6 @@
 //! stream, holding at most 1 MiB of it. A record names its file and
 //! directory by MFT reference: joining with the volume's MFT gives paths.
 
-mod bytes;
 mod flags;
 #[cfg(feature = "mft")]
 mod mft;
@@ -49,8 +48,8 @@ mod paths;
 mod record;
 mod scan;
 mod stream;
-mod text;
-mod time;
+
+use ntfs_common::{bytes, text, time};
 
 use core::fmt;
 

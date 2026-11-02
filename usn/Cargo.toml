@@ -22,6 +22,8 @@ name = "usn"
 mft = ["dep:mft"]
 
 [dependencies]
+# The byte cursor, UTF-16 decoding and FILETIMEs shared with the other crates (common/).
+ntfs-common = { package = "ys-ntfs-parser-common", path = "../common" }
 mft = { package = "ys-ntfs-parser-mft", path = "../mft", optional = true }
 
 [dev-dependencies]

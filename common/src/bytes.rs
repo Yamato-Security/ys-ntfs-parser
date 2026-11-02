@@ -17,26 +17,34 @@
 
 //! A cursor over a byte slice that never panics: the part of
 //! `sootmark-common`'s `bytes::Reader` (MIT OR Apache-2.0, by the same
-//! author as this crate's upstream) that the decoders use.
+//! author as the usn and logfile crates' upstreams) that their decoders use.
 
 /// The bytes asked for are not there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Eof;
+pub struct Eof;
 
 /// A cursor over a byte slice.
 #[derive(Debug, Clone)]
-pub(crate) struct Reader<'a> {
+pub struct Reader<'a> {
     data: &'a [u8],
     pos: usize,
 }
 
 impl<'a> Reader<'a> {
-    pub(crate) const fn new(data: &'a [u8]) -> Self {
+    /// A cursor at the start of `data`.
+    #[must_use]
+    pub const fn new(data: &'a [u8]) -> Self {
         Self { data, pos: 0 }
     }
 
+    /// The current position.
+    #[must_use]
+    pub const fn position(&self) -> usize {
+        self.pos
+    }
+
     /// Move to `position`, which may be the end but not past it.
-    pub(crate) fn seek(&mut self, position: usize) -> Result<(), Eof> {
+    pub fn seek(&mut self, position: usize) -> Result<(), Eof> {
         if position > self.data.len() {
             return Err(Eof);
         }
@@ -45,12 +53,12 @@ impl<'a> Reader<'a> {
     }
 
     /// Advance by `n` bytes.
-    pub(crate) fn skip(&mut self, n: usize) -> Result<(), Eof> {
+    pub fn skip(&mut self, n: usize) -> Result<(), Eof> {
         self.bytes(n).map(|_| ())
     }
 
     /// The next `n` bytes.
-    pub(crate) fn bytes(&mut self, n: usize) -> Result<&'a [u8], Eof> {
+    pub fn bytes(&mut self, n: usize) -> Result<&'a [u8], Eof> {
         let end = self.pos.checked_add(n).ok_or(Eof)?;
         let out = self.data.get(self.pos..end).ok_or(Eof)?;
         self.pos = end;
@@ -58,33 +66,39 @@ impl<'a> Reader<'a> {
     }
 
     /// The next `N` bytes as an array.
-    pub(crate) fn array<const N: usize>(&mut self) -> Result<[u8; N], Eof> {
+    pub fn array<const N: usize>(&mut self) -> Result<[u8; N], Eof> {
         let mut out = [0u8; N];
         out.copy_from_slice(self.bytes(N)?);
         Ok(out)
     }
 
-    pub(crate) fn u8(&mut self) -> Result<u8, Eof> {
+    /// A byte.
+    pub fn u8(&mut self) -> Result<u8, Eof> {
         Ok(self.array::<1>()?[0])
     }
 
-    pub(crate) fn u16_le(&mut self) -> Result<u16, Eof> {
+    /// A little-endian `u16`.
+    pub fn u16_le(&mut self) -> Result<u16, Eof> {
         Ok(u16::from_le_bytes(self.array()?))
     }
 
-    pub(crate) fn i16_le(&mut self) -> Result<i16, Eof> {
+    /// A little-endian `i16`.
+    pub fn i16_le(&mut self) -> Result<i16, Eof> {
         Ok(i16::from_le_bytes(self.array()?))
     }
 
-    pub(crate) fn u32_le(&mut self) -> Result<u32, Eof> {
+    /// A little-endian `u32`.
+    pub fn u32_le(&mut self) -> Result<u32, Eof> {
         Ok(u32::from_le_bytes(self.array()?))
     }
 
-    pub(crate) fn u64_le(&mut self) -> Result<u64, Eof> {
+    /// A little-endian `u64`.
+    pub fn u64_le(&mut self) -> Result<u64, Eof> {
         Ok(u64::from_le_bytes(self.array()?))
     }
 
-    pub(crate) fn i64_le(&mut self) -> Result<i64, Eof> {
+    /// A little-endian `i64`.
+    pub fn i64_le(&mut self) -> Result<i64, Eof> {
         Ok(i64::from_le_bytes(self.array()?))
     }
 }
@@ -98,7 +112,9 @@ mod tests {
         let mut r = Reader::new(&[1, 0, 2, 0, 0, 0, 9]);
         assert_eq!(r.u16_le(), Ok(1));
         assert_eq!(r.u32_le(), Ok(2));
+        assert_eq!(r.position(), 6);
         assert_eq!(r.u16_le(), Err(Eof));
+        assert_eq!(r.position(), 6, "a failed read does not move");
         assert_eq!(r.skip(usize::MAX), Err(Eof));
         assert_eq!(r.u8(), Ok(9), "a failed read does not move");
         assert_eq!(r.u8(), Err(Eof));

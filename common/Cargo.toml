@@ -1,0 +1,31 @@
+[package]
+name = "ys-ntfs-parser-common"
+version = "1.0.0"
+authors = ["Florian Amette", "Zach Mathis (@yamatosecurity)"]
+publish = false
+edition = "2024"
+rust-version = "1.99"
+description = "What the usn and logfile crates share: a byte cursor that never panics, lossless UTF-16 decoding and Windows FILETIMEs."
+license = "RPL-1.5 AND (MIT OR Apache-2.0)"
+repository = "https://github.com/Yamato-Security/ys-ntfs-parser"
+homepage = "https://github.com/Yamato-Security/ys-ntfs-parser"
+include = ["/src", "/LICENSE", "/LICENSE-APACHE", "/LICENSE-MIT"]
+
+[lib]
+name = "ntfs_common"
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+# Every error is `Eof`, documented on its type.
+missing_errors_doc = "allow"

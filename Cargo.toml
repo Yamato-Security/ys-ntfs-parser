@@ -63,7 +63,7 @@ tempfile = "3.27"
 rexpect = "0.7"
 
 [workspace]
-members = ["mft", "usn", "logfile"]
+members = ["common", "mft", "usn", "logfile"]
 # cargo-fuzz keeps its own workspace.
 exclude = ["mft/fuzz"]
 

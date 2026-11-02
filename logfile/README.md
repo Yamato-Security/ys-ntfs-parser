@@ -1,8 +1,9 @@
-# ys-logfile-parser
+# ntfslog (ys-ntfs-parser-logfile)
 
-Yamato Security's maintained fork of [sootmark-ntfslog](https://github.com/Sootmark/ntfslog), the
-NTFS transaction journal (`$LogFile`) parser for
-[Juntei](https://github.com/Yamato-Security/juntei). The upstream history is kept, and its code
+The `$LogFile` crate of [ys-ntfs-parser](../README.md): Yamato Security's maintained fork of
+[sootmark-ntfslog](https://github.com/Sootmark/ntfslog), the NTFS transaction journal (`$LogFile`)
+parser for [Juntei](https://github.com/Yamato-Security/juntei). It was ys-logfile-parser until it
+moved here. The upstream history is kept, and its code
 stays under its MIT OR Apache-2.0 license (see [License](#license)).
 
 `$LogFile` holds what NTFS was about to change on a volume, and how to undo it, for the last minutes
@@ -30,13 +31,13 @@ for problem in &log.problems {
 }
 ```
 
-Use it from Cargo by commit. The crate is `ys-logfile-parser`, named after the repository, and its
-library keeps the name `ntfslog`. It is not published, and its versions are the fork's own: 1.0.0
-since the fork.
+Use it from Cargo by commit. The crate is `ys-ntfs-parser-logfile`, and its library keeps the name
+`ntfslog`. It is not published, and its versions are the fork's own. Or use the whole workspace, as
+`ys_ntfs_parser::ntfslog` (see [ys-ntfs-parser](../README.md)).
 
 ```toml
 [dependencies]
-ntfslog = { package = "ys-logfile-parser", git = "https://github.com/Yamato-Security/ys-logfile-parser" }
+ntfslog = { package = "ys-ntfs-parser-logfile", git = "https://github.com/Yamato-Security/ys-ntfs-parser" }
 ```
 
 ## Why sootmark-ntfslog
@@ -64,7 +65,7 @@ a Windows GUI, not run). None of their code is here.
 
 | Change | Source |
 | --- | --- |
-| No dependencies: sootmark-common's byte reader and UTF-16 decoding are part of the crate; times are `Filetime`s (the raw FILETIME), as in ys-usn-journal-parser | fork |
+| No dependencies outside the workspace: sootmark-common's byte reader and UTF-16 decoding are in the workspace's common crate, shared with the usn crate; times are `Filetime`s (the raw FILETIME), the same type as the usn crate's | fork |
 | Open attributes resolved by stretch of the log: a mount starts a new table, records written before the one that opened their attribute survives take it, `target_inferred` marks a target from another stretch; every update with a target gets it (`$MFT`'s `$DATA` for file record operations) | fork; the second parser's approach |
 | A mount no longer leaves updates with a stale target (another file's attribute, or one entry's file with another's name: 24,511 records of one Museum log) | fork (found in review) |
 | `Update::redo_decoded` / `undo_decoded`: file records (a new record whole; a freed record's header), attribute records, index entries (`$FILE_NAME` keys, view indexes told apart) and the times, sizes and attributes directory entries keep (`UpdateFileName*`) | fork |
@@ -110,7 +111,7 @@ a Windows GUI, not run). None of their code is here.
   escaped, never replaced.
 - **USN journal writes** (`Update::journal_write`): the bytes written to `$UsnJrnl:$J` and their
   offset. They are whole USN records in the journal's layout, to parse with a USN record parser such
-  as ys-usn-journal-parser.
+  as the workspace's usn crate.
 - **Checkpoints** (the NTFS client's restart area): version, start LSN, where the copies of the open
   attribute, attribute name, dirty page and transaction tables are, and the cluster size.
 
@@ -165,12 +166,13 @@ a Windows GUI, not run). None of their code is here.
 
 ## License
 
-ys-logfile-parser is copyright Shirofune Security Co., Ltd. and released under the [Reciprocal
+This crate is copyright Shirofune Security Co., Ltd. and released under the [Reciprocal
 Public License 1.5](LICENSE) (RPL-1.5); its source code was published under MIT OR Apache-2.0 before
 version 1.0.0. It is changed from [sootmark-ntfslog](https://github.com/Sootmark/ntfslog) (copyright
 Cyber Experts), whose code stays under the MIT License or the Apache License 2.0 (`LICENSE-MIT`,
-`LICENSE-APACHE`): each Rust file changed from it says so in its header. Its byte, text and time
-helpers are changed from [sootmark-common](https://github.com/Sootmark/common) (copyright Cyber
-Experts), under the same licenses. The test files are go-ntfs's and dfVFS's, under the Apache
+`LICENSE-APACHE`): each Rust file changed from it says so in its header. The byte, text and
+time helpers it shares with the other crates, in the workspace's common crate (`../common`), are
+changed from [sootmark-common](https://github.com/Sootmark/common) (copyright Cyber Experts), under
+the same licenses. The test files are go-ntfs's and dfVFS's, under the Apache
 License 2.0, and the DFIR Artifact Museum's, under the MIT License: see the `LICENSE` and `NOTICE`
 beside each.

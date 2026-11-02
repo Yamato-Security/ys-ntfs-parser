@@ -1,8 +1,9 @@
-# ys-usn-journal-parser
+# usn (ys-ntfs-parser-usn)
 
-Yamato Security's maintained fork of [sootmark-usn](https://github.com/Sootmark/usn), the NTFS USN
-change journal (`$Extend\$UsnJrnl:$J`) parser used by
-[Juntei](https://github.com/Yamato-Security/juntei). The upstream history is kept, and its code
+The USN journal crate of [ys-ntfs-parser](../README.md): Yamato Security's maintained fork of
+[sootmark-usn](https://github.com/Sootmark/usn), the NTFS USN change journal
+(`$Extend\$UsnJrnl:$J`) parser used by [Juntei](https://github.com/Yamato-Security/juntei). It was
+ys-usn-journal-parser until it moved here. The upstream history is kept, and its code
 stays under its MIT OR Apache-2.0 license (see [Licence](#licence)); everything below the line is
 upstream's README.
 
@@ -26,7 +27,7 @@ What the fork adds and fixes:
 | 6–8× faster on real journals (a 64 KiB zero scan ran before every record): 750–1,500 MB/s; a 4 GiB sparse start in 0.3 s | fork (found in review) |
 | A false record header near the end of the journal no longer hides the records after it | fork (found in review) |
 | `PathBuilder` / `Paths`: each record's directory path as it was when the record was written, by rewinding the journal; reused MFT records told apart by sequence number | idea of RustyUsn, usnjrnl-forensic, CyberCX; written afresh |
-| `PathBuilder::seed_from_mft` (feature `mft`, ys-mft-parser): directories from `$MFT`, long names from extension records, deleted directories with the sequence number the journal used | fork |
+| `PathBuilder::seed_from_mft` (feature `mft`, the workspace's mft crate): directories from `$MFT`, long names from extension records, deleted directories with the sequence number the journal used | fork |
 | `carve(reader)`: V2/V3 records from disk images, unallocated space, pagefiles, with strict layout checks | idea of RustyUsn and ntfs-core's carver; written afresh |
 | Tests on real Windows 11 and Server 2012 R2 journals, carving, paths | fork |
 
@@ -54,12 +55,12 @@ for entry in usn::read(std::io::BufReader::new(std::fs::File::open("$J")?)) {
 }
 ```
 
-Use it from Cargo by commit (the crate is `ys-usn-journal-parser`, named after the repository, and
-its library keeps the name `usn`; it is not published, and its versions are the fork's own: 1.0.0
-since the rename):
+Use it from Cargo by commit (the crate is `ys-ntfs-parser-usn`, and its library keeps the name
+`usn`; it is not published, and its versions are the fork's own), or the whole workspace, as
+`ys_ntfs_parser::usn` (see [ys-ntfs-parser](../README.md)):
 
 ```toml
-usn = { package = "ys-usn-journal-parser", git = "https://github.com/Yamato-Security/ys-usn-journal-parser", rev = "<commit>", features = ["mft"] }
+usn = { package = "ys-ntfs-parser-usn", git = "https://github.com/Yamato-Security/ys-ntfs-parser", rev = "<commit>", features = ["mft"] }
 ```
 
 MSRV: 1.99 (edition 2024). See [CHANGELOG.md](CHANGELOG.md).
@@ -105,10 +106,11 @@ Not here: paths. A record names its file and directory by MFT reference; joining
 
 ## Licence
 
-ys-usn-journal-parser is copyright Shirofune Security Co., Ltd. and released under the [Reciprocal
+This crate is copyright Shirofune Security Co., Ltd. and released under the [Reciprocal
 Public License 1.5](LICENSE) (RPL-1.5); its source code was published under MIT OR Apache-2.0 before
 version 1.0.0. It is changed from [sootmark-usn](https://github.com/Sootmark/usn) (copyright Cyber
 Experts), whose code stays under the MIT License or the Apache License 2.0 (`LICENSE-MIT`,
-`LICENSE-APACHE`): each Rust file changed from it says so in its header. Its byte, text and time
-helpers are changed from [sootmark-common](https://github.com/Sootmark/common) (copyright Cyber
-Experts), under the same licenses. The test journal is plaso's, under the Apache licence 2.0.
+`LICENSE-APACHE`): each Rust file changed from it says so in its header. The byte, text and
+time helpers it shares with the other crates, in the workspace's common crate (`../common`), are
+changed from [sootmark-common](https://github.com/Sootmark/common) (copyright Cyber Experts), under
+the same licenses. The test journal is plaso's, under the Apache licence 2.0.

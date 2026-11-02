@@ -3,6 +3,11 @@
 ## 1.0.0 (Unreleased)
 
 ### Changed
+- Moved into [ys-ntfs-parser](https://github.com/Yamato-Security/ys-ntfs-parser) (`usn/`): the crate
+  is now `ys-ntfs-parser-usn` (its library is still `usn`), and the `mft` feature uses the
+  workspace's mft crate. The byte cursor, UTF-16 decoding and `Filetime` are the workspace's common
+  crate's, shared with the logfile crate: `usn::Filetime` is `ntfs_common::Filetime`.
+  (@YamatoSecurity)
 - License: ys-usn-journal-parser is now copyright Shirofune Security Co., Ltd. and released under
   the Reciprocal Public License 1.5 (RPL-1.5) instead of MIT OR Apache-2.0. Upstream's code stays
   under MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`). Every Rust file carries the copyright

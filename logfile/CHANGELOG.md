@@ -28,6 +28,10 @@ First version of Yamato Security's fork, based on sootmark-ntfslog 0.1.0 (Sootma
   (@YamatoSecurity)
 
 ### Changed
+- Moved into [ys-ntfs-parser](https://github.com/Yamato-Security/ys-ntfs-parser) (`logfile/`): the
+  crate is now `ys-ntfs-parser-logfile` (its library is still `ntfslog`). The byte cursor, UTF-16
+  decoding and `Filetime` are the workspace's common crate's, shared with the usn crate:
+  `ntfslog::Filetime` is `ntfs_common::Filetime`. (@YamatoSecurity)
 - License: ys-logfile-parser is now copyright Shirofune Security Co., Ltd. and released under the
   Reciprocal Public License 1.5 (RPL-1.5) instead of MIT OR Apache-2.0. Upstream's code stays under
   MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`). Every Rust file carries the copyright and the

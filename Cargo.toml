@@ -5,7 +5,7 @@ authors = ["Omer Ben-Amram", "Florian Amette", "Zach Mathis (@yamatosecurity)"]
 publish = false
 edition = "2024"
 rust-version = "1.99"
-description = "NTFS forensic artifacts: the Master File Table ($MFT, $I30 indexes, FILE record slack), the USN change journal ($UsnJrnl:$J), the transaction journal ($LogFile) and the boot sector ($Boot), with the ys-ntfs-parser command"
+description = "NTFS forensic artifacts: the Master File Table ($MFT, $I30 indexes, FILE record slack), the USN change journal ($UsnJrnl:$J), the transaction journal ($LogFile), the boot sector ($Boot) and the security descriptors ($Secure:$SDS), with the ys-ntfs-parser command"
 license = "RPL-1.5 AND (MIT OR Apache-2.0)"
 repository = "https://github.com/Yamato-Security/ys-ntfs-parser"
 homepage = "https://github.com/Yamato-Security/ys-ntfs-parser"
@@ -36,11 +36,12 @@ cli = [
 ]
 
 [dependencies]
-# The libraries keep their names: `mft::…`, `usn::…`, `ntfslog::…`, `boot::…`.
+# The libraries keep their names: `mft::…`, `usn::…`, `ntfslog::…`, `boot::…`, `secure::…`.
 mft = { package = "ys-ntfs-parser-mft", path = "mft" }
 usn = { package = "ys-ntfs-parser-usn", path = "usn", features = ["mft"] }
 ntfslog = { package = "ys-ntfs-parser-logfile", path = "logfile" }
 boot = { package = "ys-ntfs-parser-boot", path = "boot" }
+secure = { package = "ys-ntfs-parser-secure", path = "secure" }
 
 anyhow = { version = "1.0", optional = true }
 clap = { version = "4", optional = true }
@@ -66,7 +67,7 @@ tempfile = "3.27"
 rexpect = "0.7"
 
 [workspace]
-members = ["common", "mft", "usn", "logfile", "boot"]
+members = ["common", "mft", "usn", "logfile", "boot", "secure"]
 # cargo-fuzz keeps its own workspace.
 exclude = ["mft/fuzz"]
 

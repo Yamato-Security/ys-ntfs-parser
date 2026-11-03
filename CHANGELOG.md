@@ -14,6 +14,10 @@ First version: one workspace for Yamato Security's NTFS parsers. (@YamatoSecurit
 - Subcrate package include lists retain their RPL license text alongside upstream licenses. (@YamatoSecurity)
 
 ### Added
+- `ys-ntfs-parser-boot` (`boot/`, library `boot`): the NTFS boot sector (`$Boot`), and
+  `ys-ntfs-parser-secure` (`secure/`, library `secure`): the security descriptors of `$Secure:$SDS`
+  and a decoder of self-relative security descriptors with SDDL. Both re-exported, as
+  `ys_ntfs_parser::boot` and `ys_ntfs_parser::secure`. (@YamatoSecurity)
 - ys-mft-parser (`mft/`, with the FILE record slack of its `ys/file-record-slack` branch),
   ys-usn-journal-parser (`usn/`) and ys-logfile-parser (`logfile/`), with their histories and their
   upstreams'. Their crates are now `ys-ntfs-parser-mft`, `ys-ntfs-parser-usn` and

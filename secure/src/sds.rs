@@ -142,8 +142,10 @@ pub fn read(data: &[u8]) -> Sds<'_> {
         };
         let mut pos = block;
         while pos < used_end && pos + ENTRY_HEADER_SIZE <= block_end {
-            if is_zero(&data[pos..pos + ENTRY_HEADER_SIZE]) {
-                // the rest of the block is unused
+            if is_zero(&data[pos..pos + ENTRY_HEADER_SIZE])
+                && entry_at(data, pos + BLOCK_SIZE, pos, mirror_end, true).is_none()
+            {
+                // Unused padding ends a block only when neither copy has an entry here.
                 break;
             }
             let entry = if let Some(entry) = entry_at(data, pos, pos, block_end, false) {
@@ -196,6 +198,7 @@ pub fn read(data: &[u8]) -> Sds<'_> {
                 && pos + ENTRY_HEADER_SIZE <= block_end
                 && !is_zero(&data[pos..pos + ENTRY_HEADER_SIZE])
                 && entry_at(data, pos, pos, block_end, false).is_none()
+                && entry_at(data, pos + BLOCK_SIZE, pos, mirror_end, true).is_none()
             {
                 pos += 16;
             }
@@ -400,6 +403,42 @@ mod tests {
         let sds = read(&s[..60]);
         assert_eq!(sds.entries, []);
         assert_eq!(sds.problems.len(), 1);
+    }
+
+    #[test]
+    fn zeroed_primary_headers_still_recover_valid_mirrors() {
+        let mut bytes = stream();
+        bytes[..ENTRY_HEADER_SIZE].fill(0);
+        let parsed = read(&bytes);
+        assert_eq!(
+            parsed
+                .entries
+                .iter()
+                .map(|e| e.security_id)
+                .collect::<Vec<_>>(),
+            [0x100, 0x101, 0x102, 0x103]
+        );
+        assert!(parsed.entries[0].from_mirror);
+        assert_ne!(parsed.problems, [] as [Problem; 0]);
+    }
+
+    #[test]
+    fn resynchronization_keeps_entries_with_only_a_readable_mirror() {
+        let mut bytes = stream();
+        for start in [0, BLOCK_SIZE] {
+            bytes[start..start + 80].fill(0x5a);
+        }
+        bytes[80..160].fill(0x5a);
+        let parsed = read(&bytes);
+        assert_eq!(
+            parsed
+                .entries
+                .iter()
+                .map(|e| e.security_id)
+                .collect::<Vec<_>>(),
+            [0x101, 0x102, 0x103]
+        );
+        assert!(parsed.entries[0].from_mirror);
     }
 
     #[test]

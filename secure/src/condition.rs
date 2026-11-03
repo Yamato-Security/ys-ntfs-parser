@@ -36,7 +36,12 @@ pub(crate) fn expression(data: &[u8]) -> Option<String> {
     while let Some(&token) = data.get(at) {
         match token {
             // padding to the ACE's DWORD boundary
-            0x00 => at += 1,
+            0x00 => {
+                if data[at..].iter().any(|&byte| byte != 0) {
+                    return None;
+                }
+                break;
+            }
             0x01..=0x04 | 0x10 | 0x18 | 0x50 | 0x51 => {
                 let (text, next) = literal(data, at, 0)?;
                 stack.push(text);
@@ -50,7 +55,7 @@ pub(crate) fn expression(data: &[u8]) -> Option<String> {
                     0xfb => "@Device.",
                     _ => "",
                 };
-                stack.push(format!("{prefix}{name}"));
+                stack.push(format!("{prefix}{}", attribute_name(&name, token != 0xf8)?));
                 at = next;
             }
             _ => {
@@ -157,6 +162,35 @@ fn hex(bytes: &[u8]) -> String {
     })
 }
 
+/// SDDL has no escape for a quote inside a Unicode literal. Keep such data as undecoded,
+/// rather than returning a syntactically different or truncated descriptor.
+fn quoted(text: &str) -> Option<String> {
+    (!text.contains(['"', '\0'])).then(|| format!("\"{text}\""))
+}
+
+fn attribute_name(name: &str, prefixed: bool) -> Option<String> {
+    if name.is_empty() || name.contains('\0') {
+        return None;
+    }
+    let mut output = String::new();
+    for (index, unit) in name.encode_utf16().enumerate() {
+        let simple =
+            u8::try_from(unit).is_ok_and(|c| c.is_ascii_alphanumeric() || b":./_".contains(&c));
+        if simple || (unit == u16::from(b'@') && (prefixed || index != 0)) {
+            output.push(char::from_u32(u32::from(unit))?);
+        } else if !prefixed {
+            return None;
+        } else if (unit >= 0x80 && !(0xd800..=0xdfff).contains(&unit))
+            || u8::try_from(unit).is_ok_and(|c| b"#$'*+-:;?@[\\]^_`{}~".contains(&c))
+        {
+            output.push(char::from_u32(u32::from(unit))?);
+        } else {
+            let _ = write!(output, "%%{unit:04x}");
+        }
+    }
+    Some(output)
+}
+
 /// The literal token at `at` in SDDL, and where the next token starts.
 fn literal(data: &[u8], at: usize, depth: usize) -> Option<(String, usize)> {
     match *data.get(at)? {
@@ -181,7 +215,7 @@ fn literal(data: &[u8], at: usize, depth: usize) -> Option<(String, usize)> {
         }
         0x10 => {
             let (text, next) = string(data, at + 1)?;
-            Some((format!("\"{text}\""), next))
+            Some((quoted(&text)?, next))
         }
         0x18 => {
             let (bytes, next) = counted(data, at + 1)?;
@@ -226,13 +260,13 @@ pub(crate) fn resource_attribute(data: &[u8]) -> Option<String> {
         0x10 => "TX",
         _ => return None,
     };
-    let mut text = format!("(\"{name}\",{token},0x{flags:x}");
+    let mut text = format!("({},{token},0x{flags:x}", quoted(&name)?);
     for i in 0..count {
         let at = u32_at(data, 16 + 4 * i)? as usize;
         let value = match value_type {
             0x01 => u64_at(data, at)?.cast_signed().to_string(),
             0x02 | 0x06 => u64_at(data, at)?.to_string(),
-            0x03 => format!("\"{}\"", terminated(data, at)?),
+            0x03 => quoted(&terminated(data, at)?)?,
             0x05 => {
                 let (bytes, _) = counted(data, at)?;
                 let sid = Sid::parse(bytes).ok().filter(|s| s.size() == bytes.len())?;
@@ -369,5 +403,36 @@ mod tests {
         data[4] = 0x7f;
         assert_eq!(resource_attribute(&data), None);
         assert_eq!(resource_attribute(&[0; 8]), None);
+    }
+    #[test]
+    fn quoted_or_nul_strings_cannot_be_claimed_as_exact_sddl() {
+        for text in ["a\"b", "a\0b"] {
+            let mut data = b"artx".to_vec();
+            data.extend(text_token(0xf9, "name"));
+            data.extend(text_token(0x10, text));
+            data.push(0x80);
+            assert_eq!(expression(&data), None);
+        }
+    }
+
+    #[test]
+    fn padding_cannot_hide_tokens_inside_a_condition() {
+        let mut data = b"artx".to_vec();
+        data.extend(text_token(0xf9, "name"));
+        data.push(0);
+        data.extend(text_token(0x10, "value"));
+        data.push(0x80);
+        assert_eq!(expression(&data), None);
+    }
+
+    #[test]
+    fn prefixed_attribute_names_escape_reserved_sddl_characters() {
+        let mut data = b"artx".to_vec();
+        data.extend(text_token(0xf9, "department name%"));
+        data.push(0x87);
+        assert_eq!(
+            expression(&data).as_deref(),
+            Some("(Exists @User.department%%0020name%%0025)")
+        );
     }
 }

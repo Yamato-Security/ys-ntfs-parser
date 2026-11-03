@@ -10,3 +10,5 @@ First version.
 - `SecurityDescriptor`: a decoder of self-relative security descriptors (owner, group, control
   flags, DACL, SACL, every ACE layout of MS-DTYP), with SDDL that includes callback ACEs' conditions
   and resource attribute claims, and the names of well-known SIDs. (@YamatoSecurity)
+
+- Preserve mirror-only entries after zeroed or damaged primary headers. Render conditional attribute names using SDDL escaping, reject embedded-quote/NUL literals that SDDL cannot represent, and reject nonterminal padding instead of claiming a valid exact expression.

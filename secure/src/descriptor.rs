@@ -395,7 +395,7 @@ const fn object_layout(ace_type: u8) -> bool {
 impl Ace<'_> {
     /// The type's name in [MS-DTYP] without `_ACE_TYPE`: `ACCESS_ALLOWED`, `SYSTEM_AUDIT`, …
     ///
-    /// [MS-DTYP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/628ebb1d-c509-4ea0-a10f-77ef97ca4586
+    /// [MS-DTYP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/
     #[must_use]
     pub fn type_name(&self) -> &'static str {
         match self.ace_type {

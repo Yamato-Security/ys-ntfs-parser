@@ -114,10 +114,12 @@ pub fn descriptor_hash(descriptor: &[u8]) -> u32 {
         })
 }
 
-/// Whether `data` starts like an `$SDS` stream: an entry at offset 0.
+/// Whether `data` starts like an `$SDS` stream: an entry at offset 0 that holds a self-relative
+/// security descriptor. The first entry is small: 4 KiB of the stream are enough.
 #[must_use]
 pub fn looks_like_sds(data: &[u8]) -> bool {
-    entry_at(data, 0, 0, data.len().min(BLOCK_SIZE), false).is_some()
+    entry_at(data, 0, 0, data.len().min(BLOCK_SIZE), false)
+        .is_some_and(|entry| entry.security_descriptor().is_ok())
 }
 
 /// Read the entries of an `$SDS` stream (the whole stream, mirror blocks included).
@@ -382,6 +384,12 @@ mod tests {
     fn short_and_empty_streams() {
         assert_eq!(read(&[]), Sds::default());
         assert!(!looks_like_sds(&[0u8; 64]));
+        // an entry header, but not a descriptor
+        let mut s = Vec::new();
+        put(&mut s, 0, 0x100, 1);
+        assert!(looks_like_sds(&s));
+        s[ENTRY_HEADER_SIZE + 3] = 0;
+        assert!(!looks_like_sds(&s));
         // without its mirror, a block is read to its end
         let mut s = Vec::new();
         put(&mut s, 0, 0x100, 1);

@@ -1839,10 +1839,15 @@ dependencies = [
  "simplelog",
  "sonic-rs",
  "tempfile",
+ "ys-ntfs-parser-boot",
  "ys-ntfs-parser-logfile",
  "ys-ntfs-parser-mft",
  "ys-ntfs-parser-usn",
 ]
+
+[[package]]
+name = "ys-ntfs-parser-boot"
+version = "1.0.0"
 
 [[package]]
 name = "ys-ntfs-parser-common"

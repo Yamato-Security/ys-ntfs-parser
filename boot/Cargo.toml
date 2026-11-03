@@ -1,0 +1,27 @@
+[package]
+name = "ys-ntfs-parser-boot"
+version = "1.0.0"
+authors = ["Zach Mathis (@yamatosecurity)"]
+publish = false
+edition = "2024"
+rust-version = "1.99"
+description = "The NTFS boot sector ($Boot): the volume's geometry, where its $MFT is, its serial number, its boot code, and whether Windows would mount it."
+license = "RPL-1.5"
+repository = "https://github.com/Yamato-Security/ys-ntfs-parser"
+homepage = "https://github.com/Yamato-Security/ys-ntfs-parser"
+readme = "README.md"
+keywords = ["forensics", "dfir", "ntfs", "boot-sector", "vbr"]
+include = ["/src", "/README.md", "/LICENSE"]
+
+[lib]
+name = "boot"
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"

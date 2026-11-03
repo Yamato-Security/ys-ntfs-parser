@@ -1839,10 +1839,16 @@ dependencies = [
  "simplelog",
  "sonic-rs",
  "tempfile",
+ "ys-ntfs-parser-boot",
  "ys-ntfs-parser-logfile",
  "ys-ntfs-parser-mft",
+ "ys-ntfs-parser-secure",
  "ys-ntfs-parser-usn",
 ]
+
+[[package]]
+name = "ys-ntfs-parser-boot"
+version = "1.0.0"
 
 [[package]]
 name = "ys-ntfs-parser-common"
@@ -1880,6 +1886,13 @@ dependencies = [
  "thiserror 2.0.21",
  "utf16-simd",
  "winstructs",
+]
+
+[[package]]
+name = "ys-ntfs-parser-secure"
+version = "1.0.0"
+dependencies = [
+ "flate2",
 ]
 
 [[package]]

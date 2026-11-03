@@ -1,0 +1,31 @@
+[package]
+name = "ys-ntfs-parser-secure"
+version = "1.0.0"
+authors = ["Zach Mathis (@yamatosecurity)"]
+publish = false
+edition = "2024"
+rust-version = "1.99"
+description = "NTFS $Secure:$SDS: every security descriptor of a volume by security ID (owner, group, DACL, SACL, SDDL), with hash and mirror checks, and a decoder of self-relative security descriptors."
+license = "RPL-1.5"
+repository = "https://github.com/Yamato-Security/ys-ntfs-parser"
+homepage = "https://github.com/Yamato-Security/ys-ntfs-parser"
+readme = "README.md"
+keywords = ["forensics", "dfir", "ntfs", "security-descriptor", "acl"]
+include = ["/src", "/README.md", "/LICENSE"]
+
+[lib]
+name = "secure"
+
+[dependencies]
+
+[dev-dependencies]
+flate2 = "1"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+cast_possible_truncation = "allow"

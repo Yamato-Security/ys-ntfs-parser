@@ -19,11 +19,15 @@
 //! | [`mft`] | The Master File Table (`$MFT`): entries, attributes, full paths, `$I30` directory indexes and the names left in FILE record slack | `ys-ntfs-parser-mft` (`mft/`) |
 //! | [`usn`] | The USN change journal (`$Extend\$UsnJrnl:$J`): every V2, V3 and V4 record, paths rewound to each record's time (seeded from the `$MFT`) and carving | `ys-ntfs-parser-usn` (`usn/`) |
 //! | [`ntfslog`] | The transaction journal (`$LogFile`): restart areas, log records with their redo and undo operations, and what they say about files | `ys-ntfs-parser-logfile` (`logfile/`) |
+//! | [`boot`] | The boot sector (`$Boot`): the volume's geometry, where its `$MFT` is, its serial number, its boot code, and whether Windows would mount it | `ys-ntfs-parser-boot` (`boot/`) |
+//! | [`secure`] | The security descriptors (`$Secure:$SDS`): each security ID's owner, group, DACL, SACL and SDDL, with hash and mirror checks, and a decoder of self-relative security descriptors | `ys-ntfs-parser-secure` (`secure/`) |
 //!
 //! Each module is its crate, re-exported: `ys_ntfs_parser::mft::MftParser` is `mft::MftParser`.
 //! The `ys-ntfs-parser` command (feature `cli`, on by default) reads `$MFT` files; libraries
 //! depend on this crate with `default-features = false`.
 
+pub use boot;
 pub use mft;
 pub use ntfslog;
+pub use secure;
 pub use usn;

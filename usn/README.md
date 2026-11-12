@@ -69,7 +69,7 @@ MSRV: 1.99 (edition 2024). See [CHANGELOG.md](CHANGELOG.md).
 
 # usn
 
-The NTFS USN change journal (`$Extend\$UsnJrnl:$J`) as KAPE, Velociraptor and forensic images give it: every record Windows kept of what happened to which file, read straight through the gigabytes of sparse zeros a collected `$J` usually starts with. One dependency, its sibling `sootmark-common` (times, UTF-16).
+The NTFS USN change journal (`$Extend\$UsnJrnl:$J`) as triage collections and forensic images give it: every record Windows kept of what happened to which file, read straight through the gigabytes of sparse zeros a collected `$J` usually starts with. One dependency, its sibling `sootmark-common` (times, UTF-16).
 
 ```toml
 [dependencies]

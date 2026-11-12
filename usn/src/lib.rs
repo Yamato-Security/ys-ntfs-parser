@@ -16,7 +16,7 @@
 // and limitations under the RPL.
 
 //! The NTFS USN change journal: `$Extend\$UsnJrnl:$J`, Windows' record of
-//! every change to every file on a volume, as KAPE, Velociraptor and
+//! every change to every file on a volume, as triage collections and
 //! forensic images give it.
 //!
 //! A `$J` is mostly a sparse file: NTFS frees the journal's old pages, so a

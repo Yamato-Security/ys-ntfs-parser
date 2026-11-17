@@ -493,7 +493,7 @@ impl Ace<'_> {
             _ if data.application_data.is_empty() => None,
             _ => return None,
         };
-        let guid = |g: Option<Guid>| g.map(|g| g.to_string()).unwrap_or_default();
+        let guid = |g: Option<Guid>| g.map_or_default(|g| g.to_string());
         let mut sddl = format!(
             "({token};{};0x{:08x};{};{};{}",
             self.flag_names().concat(),

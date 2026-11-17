@@ -8,7 +8,6 @@ rust-version = "1.99"
 description = "The NTFS boot sector ($Boot): the volume's geometry, where its $MFT is, its serial number, its boot code, and whether Windows would mount it."
 license = "RPL-1.5"
 repository = "https://github.com/Yamato-Security/ys-ntfs-parser"
-homepage = "https://github.com/Yamato-Security/ys-ntfs-parser"
 readme = "README.md"
 keywords = ["forensics", "dfir", "ntfs", "boot-sector", "vbr"]
 include = ["/src", "/README.md", "/LICENSE"]

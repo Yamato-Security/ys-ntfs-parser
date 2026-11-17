@@ -1,7 +1,6 @@
 [package]
 name = "ys-ntfs-parser-mft"
 description = "A Fast (and safe) parser for the Windows Master File Table (MFT) format"
-homepage = "https://github.com/Yamato-Security/ys-ntfs-parser"
 repository = "https://github.com/Yamato-Security/ys-ntfs-parser"
 license = "RPL-1.5 AND (MIT OR Apache-2.0)"
 readme = "README.md"
@@ -20,27 +19,27 @@ include = ["/src/", "/samples/", "/README.md", "/CHANGELOG.md", "/LICENSE", "/LI
 name = "mft"
 
 [dependencies]
-log = "0.4"
-byteorder = "1"
-bitflags = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-csv = "1"
-thiserror = "2"
-num-traits = "0.2"
-num-derive = "0.5"
+log = "0.4.35"
+byteorder = "1.5.0"
+bitflags = "2.13.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+csv = "1.4.0"
+thiserror = "2.0.21"
+num-traits = "0.2.19"
+num-derive = "0.5.1"
 winstructs = "0.3.2"
 lru = "0.19.0"
-itertools = "0.15"
-jiff = { version = "0.2.38", default-features = false, features = ["std", "alloc", "serde", "perf-inline"] }
+itertools = "0.15.0"
+jiff = { version = "0.2.46", default-features = false, features = ["std", "alloc", "serde", "perf-inline"] }
 
 utf16-simd = "0.1.1"
 
 [dev-dependencies]
-criterion = "0.8"
-doc-comment = "0.3"
-env_logger = "0.11"
-insta = "1.49"
+criterion = "0.8.2"
+doc-comment = "0.3.4"
+env_logger = "0.11.11"
+insta = "1.49.0"
 
 [[bench]]
 name = "benchmark"

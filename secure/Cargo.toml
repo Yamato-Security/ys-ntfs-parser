@@ -8,7 +8,6 @@ rust-version = "1.99"
 description = "NTFS $Secure:$SDS: every security descriptor of a volume by security ID (owner, group, DACL, SACL, SDDL), with hash and mirror checks, and a decoder of self-relative security descriptors."
 license = "RPL-1.5"
 repository = "https://github.com/Yamato-Security/ys-ntfs-parser"
-homepage = "https://github.com/Yamato-Security/ys-ntfs-parser"
 readme = "README.md"
 keywords = ["forensics", "dfir", "ntfs", "security-descriptor", "acl"]
 include = ["/src", "/README.md", "/LICENSE"]
@@ -19,7 +18,7 @@ name = "secure"
 [dependencies]
 
 [dev-dependencies]
-flate2 = "1"
+flate2 = "1.1.11"
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -8,7 +8,6 @@ rust-version = "1.99"
 description = "NTFS forensic artifacts: the Master File Table ($MFT, $I30 indexes, FILE record slack), the USN change journal ($UsnJrnl:$J), the transaction journal ($LogFile), the boot sector ($Boot) and the security descriptors ($Secure:$SDS), with the ys-ntfs-parser command"
 license = "RPL-1.5 AND (MIT OR Apache-2.0)"
 repository = "https://github.com/Yamato-Security/ys-ntfs-parser"
-homepage = "https://github.com/Yamato-Security/ys-ntfs-parser"
 readme = "README.md"
 keywords = ["forensics", "dfir", "ntfs", "mft", "usn"]
 
@@ -43,28 +42,28 @@ ntfslog = { package = "ys-ntfs-parser-logfile", path = "logfile" }
 boot = { package = "ys-ntfs-parser-boot", path = "boot" }
 secure = { package = "ys-ntfs-parser-secure", path = "secure" }
 
-anyhow = { version = "1.0", optional = true }
-clap = { version = "4", optional = true }
-csv = { version = "1", optional = true }
-dialoguer = { version = "0.12", optional = true }
-indoc = { version = "2.0", optional = true }
-log = { version = "0.4", optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
-same-file = { version = "1", optional = true }
-simplelog = { version = "0.12", optional = true }
-sonic-rs = { version = "0.5.10", optional = true }
+anyhow = { version = "1.0.104", optional = true }
+clap = { version = "4.6.8", optional = true }
+csv = { version = "1.4.0", optional = true }
+dialoguer = { version = "0.12.0", optional = true }
+indoc = { version = "2.0.8", optional = true }
+log = { version = "0.4.35", optional = true }
+serde = { version = "1.0.229", features = ["derive"], optional = true }
+same-file = { version = "1.0.6", optional = true }
+simplelog = { version = "0.12.2", optional = true }
+sonic-rs = { version = "0.5.11", optional = true }
 
 [dev-dependencies]
 assert_cmd = "2.2.2"
-csv = "1"
-env_logger = "0.11"
-insta = "1.49"
-serde_json = "1"
-tempfile = "3.27"
+csv = "1.4.0"
+env_logger = "0.11.11"
+insta = "1.49.0"
+serde_json = "1.0.154"
+tempfile = "3.27.0"
 
 # rexpect relies on unix process semantics; it's only used for the command's interactive tests.
 [target.'cfg(not(target_os = "windows"))'.dev-dependencies]
-rexpect = "0.7"
+rexpect = "0.7.1"
 
 [workspace]
 members = ["common", "mft", "usn", "logfile", "boot", "secure"]

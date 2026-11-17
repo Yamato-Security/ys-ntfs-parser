@@ -8,7 +8,6 @@ rust-version = "1.99"
 description = "What the usn and logfile crates share: a byte cursor that never panics, lossless UTF-16 decoding and Windows FILETIMEs."
 license = "RPL-1.5 AND (MIT OR Apache-2.0)"
 repository = "https://github.com/Yamato-Security/ys-ntfs-parser"
-homepage = "https://github.com/Yamato-Security/ys-ntfs-parser"
 include = ["/src", "/LICENSE", "/LICENSE-APACHE", "/LICENSE-MIT"]
 
 [lib]

@@ -14,6 +14,12 @@ same problem as this fork, upstream's code is used.
 - `MftEntry::slack` (a FILE record's bytes past its size in use) and `MftEntry::slack_file_names`: the `$FILE_NAME` attributes and index entries left there (an index root that shrank, a name or other attribute removed or shortened, an earlier occupant of a reused record), found as in an INDX record's slack by `i30::slack_entries_in`, which reads any such bytes. `entry::slack_bounds` checks the record first: a size in use that ends inside the header or the attributes in use, or past the allocated size, or an allocated size past the record, is an error that says why, never slack. (@YamatoSecurity)
 
 ### Changed
+- File references (`MftReference`, in `reference`) and GUIDs (`Guid`, in `guid`) are read by this
+  crate, which no longer depends on winstructs: that brought in chrono, now unmaintained
+  (RUSTSEC-2026-0543), and old copies of bitflags, num-derive and thiserror. Both types are
+  re-exported at the crate root, serialize as before (`{"entry", "sequence"}`, the upper-case
+  registry format) and `Error::FailedToReadMftReference` and `Error::FailedToReadGuid` keep their
+  names, with the I/O error as their source. (@YamatoSecurity)
 - Moved into [ys-ntfs-parser](https://github.com/Yamato-Security/ys-ntfs-parser) (`mft/`): the crate
   is now `ys-ntfs-parser-mft` (its library is still `mft`). The command is the workspace's
   `ys-ntfs-parser` (feature `cli` of the `ys-ntfs-parser` package), so this crate has no features.

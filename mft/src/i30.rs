@@ -38,9 +38,9 @@ use crate::attribute::FileAttributeFlags;
 use crate::attribute::x30::FileNamespace;
 use crate::ntfs::apply_update_sequence_array_fixups_in_place_with;
 
+use crate::reference::MftReference;
 use num_traits::FromPrimitive;
 use serde::Serialize;
-use winstructs::ntfs::mft_reference::MftReference;
 
 /// An INDX record's signature.
 pub const INDX_SIGNATURE: &[u8; 4] = b"INDX";

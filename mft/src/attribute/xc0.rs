@@ -19,9 +19,9 @@ use std::borrow::Cow;
 
 use crate::Utf16LeStr;
 use crate::attribute::raw::data_as_hex;
+use crate::guid::Guid;
 use byteorder::{ByteOrder, LittleEndian};
 use serde::Serialize;
-use winstructs::guid::Guid;
 
 /// $REPARSE_POINT Attribute.
 /// <https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_reparse_data_buffer>

@@ -20,12 +20,12 @@ use crate::impl_serialize_for_bitflags;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
+use crate::reference::MftReference;
 use bitflags::bitflags;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use serde::Serialize;
 use std::io::Cursor;
-use winstructs::ntfs::mft_reference::MftReference;
 
 use crate::attribute::x30::FileNameAttr;
 

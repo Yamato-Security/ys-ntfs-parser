@@ -26,7 +26,7 @@ use num_traits::FromPrimitive;
 use serde::Serialize;
 use std::io::Cursor;
 
-use winstructs::ntfs::mft_reference::MftReference;
+use crate::reference::MftReference;
 
 #[derive(FromPrimitive, Serialize, Clone, Copy, Debug, PartialOrd, PartialEq)]
 #[repr(u8)]

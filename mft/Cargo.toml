@@ -28,7 +28,6 @@ csv = "1.4.0"
 thiserror = "2.0.21"
 num-traits = "0.2.19"
 num-derive = "0.5.1"
-winstructs = "0.3.2"
 lru = "0.19.0"
 itertools = "0.15.0"
 jiff = { version = "0.2.46", default-features = false, features = ["std", "alloc", "serde", "perf-inline"] }

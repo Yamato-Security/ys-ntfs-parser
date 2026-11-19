@@ -13,6 +13,12 @@ First version: one workspace for Yamato Security's NTFS parsers. (@YamatoSecurit
   a successful exit for incomplete output. (@YamatoSecurity)
 - Subcrate package include lists retain their RPL license text alongside upstream licenses. (@YamatoSecurity)
 
+### Changed
+- `mft` reads file references and GUIDs itself (`mft::MftReference`, `mft::Guid`) and no longer
+  depends on winstructs, which brought in chrono, now unmaintained (RUSTSEC-2026-0543), and old
+  copies of bitflags, num-derive and thiserror. The read errors keep their variants, with the I/O
+  error as their source. (@YamatoSecurity)
+
 ### Added
 - `ys-ntfs-parser-boot` (`boot/`, library `boot`): the NTFS boot sector (`$Boot`), and
   `ys-ntfs-parser-secure` (`secure/`, library `secure`): the security descriptors of `$Secure:$SDS`
